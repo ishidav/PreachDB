@@ -1,0 +1,139 @@
+%$Id: main.tex,v 1.1 2009/02/14 04:01:25 depaulfm Exp $
+
+\documentclass[11pt]{report}
+\usepackage{ubc-thesis}
+\usepackage{graphicx}
+\usepackage{epsfig}
+\usepackage{amsfonts}
+\usepackage{boxedminipage}
+\usepackage{comment}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+%
+% New commands
+%
+
+
+
+%% Set one of \mastersessay, \mastersthesis or \phdthesis depending on
+%% which type you're writing.
+% \mastersessay
+\mastersthesis
+% \phdthesis
+
+%% This setting determines the justification of chapter headings.
+% \leftchapter
+% \centerchapter
+  \rightchapter
+
+%% The following control the linespacing of your thesis.  Anything less
+%% than \doublespace may not be accepted by the library, but you may
+%% want to reduce the spacing on early drafts to use less paper.
+% \singlespace
+  \oneandhalfspace
+% \doublespace
+
+%% These should be filled in with the obvious information.
+\thesistitle{PREACH: Parallel Model Checker in Erlang}
+\thesisauthor{Brad Bingham and Flavio M. de Paula}
+%\thesisauthorpreviousdegrees{M.Sc. in Electrical Engineering, Universidade Federal de Minas Gerais, 1999
+%  \\ B.Sc. in Electrical Engineering, Universidade Federal de Minas Gerais 1996}
+\thesismonth{April} \thesisyear{2009}
+
+%% If your thesis committee has more members than the default (two for
+%% MSc or three for PhD), set it here
+% \thesiscommitteesize{42}
+
+%% The default copyright holder is the author; if this is not the case,
+%% set it here.
+% \thesiscopyrightholder{Ayukawa Madoka}
+
+%% If the degree is neither a PhD nor a MSc, set it here.
+% \thesisdegree{Masters of Basket Weaving}
+% \thesisdegreeabbreviation{M.BW.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%
+%%% The preliminary pages of your thesis are defined here.  Some
+%%% sections are optional, and many are automatically generated from
+%%% data previously set.
+
+%% The title page is mandatory, and is automatically generated here from
+%% the data set in the preamble.
+\reporttitlepage
+
+
+%% An abstract is mandatory, and should be placed within the
+%% thesisabstract environment.
+\input{abstract}
+
+
+%% A table of contents is mandatory.  If you require a list of tables
+%% and/or a list of figures, uncomment the appropriate line(s).  All of
+%% these items are automatically generated.
+\tableofcontents
+\listoftables
+\listoffigures
+
+%% Acknowledgements and a dedication are optional.  If you desire to
+%% include either or both of these, uncomment the appropriate lines.
+%% Acknowledgements are not allowed to take more than one page.
+
+
+\input{acknowledge}
+
+
+% \begin{thesisdedication}
+% To Herbie the cat.
+% \end{thesisdedication}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%
+%%% The main body of your thesis goes here.  Each chapter should start
+%%% with a \chapter{Chapter Title} tag.  Probably you will want to place
+%%% these in separate files and just \input them here.
+\input{introduction}
+\input{assumptions}
+\input{m2e_mapping}
+%\input{gss}
+%\input{experiment}
+%\input{conclusion}
+%\input{BIB/bib}
+% Blah, blah, blah.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%
+%%% The end matter of your thesis goes here.  The bibliography is
+%%% generally mandatory, while any appendices and an index are optional.
+
+%% Bibliography
+%% Most any citation style is acceptable, as long as it is consistent.
+%% Simple numbering (plain style) is generally sufficient.
+% \bibliographystyle{plain}
+% \thesisbibliography{...}
+%{\small
+%\bibliographystyle{alpha}
+%\bibliography{bib/bib}
+%}
+
+%% Appendices
+%% Index
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%  \newpage\listofcomments
+
+\end{document}
+
+%-----------------------------------------------------------------
+% Revision History 
+% $Log: main.tex,v $
+% Revision 1.1  2009/02/14 04:01:25  depaulfm
+% Bootstrapping documentation for preach
+%
+
+
