@@ -1,20 +1,79 @@
-%$Id: m2e_mapping.tex,v 1.1 2009/02/14 04:01:25 depaulfm Exp $
+%$Id: m2e_mapping.tex,v 1.2 2009/02/18 05:14:58 depaulfm Exp $
 \chapter{Mur$\phi$ to Erlang Mapping}
 
-\section{Syntactic Mapping}
+\section{Semantic Mapping}
 
-\subsection{Data Types}
+The main syntactic construct of a $mur\phi$ model is $rule$. The $rule$ 
+construct implements
+the guarded-commands semantic of $mur\phi$. A $rule$ comprises a $guard$ and a set
+of $actions$. A $guard$ is an expression that evaluates to true (we say then that the 
+guard fires) or false. A set of $actions$ is a set of statements that implements
+a transition from a state to another. Statements are treated as ordinary constructs
+that are 'easily' mapped to $functional$ $programming$ constructs. The important
+semantic mapping, however, is the translation of $mur\phi$'s state and 
+transition-relations encoding to $preach$.
+Note that a state of a $mur\phi$ model is global. All state manipulation is atomic, 
+however.
+The $rule$ construct enforces atomicity. When multiple rules' guard fires, each
+rules' actions are atomically and, semantically, non-deterministically executed --- 
+all this is saying is that each fired rule is executed in an arbitrary order.
+Therefore, we should preserve that semantic when mapping a $mur\phi$ model into
+a $preach$ model.
 
-\subsection{Procedures}
+Let's start by looking at how we encode a state in $preach$. Figure~\label{Sst} gives
+a syntax tree for a $state$ description. Each state is represented by a 'label'
+and a \underline{list}\footnote{Every underline word refers to an Erlang data-type} 
+ of 'encodings'. Both 'label' and 'encodings' are integers for now. We use the 
+state's label to define which process owns it. 
+The transition relation is defined by a set of rules. In $preach$, we encode the
+transition relation by a function.... 
+%remember to describe how each guard is evaluated, each action is called and what
+%murphi statements we are covering 
 
-\subsection{Functions}
+\begin{figure}
+\begin{verbatim} 
+<state>    ::= (label,encoding)
+<label>    ::= integer
+<encoding> ::= {integer [, integer] }
+\end{verbatim}
+\caption{State Syntax Tree}
+\label{Sst}
+\end{figure}
 
-\subsection{Rules}
 
+\begin{figure}
+\begin{verbatim} 
+<TR>    ::= {rule [; rule]}
+<rule>  ::= (<guard>,<action>)
+<guard> ::= <boolean_expression>
+<action>::= { <murphi_statements> }
+\end{verbatim}
+\caption{Transition Relation Syntax Tree}
+\label{TRst}
+\end{figure}
+
+
+
+% OUT OF PLACE
+%The $mur\phi$ model description is manually translated to a flat $mur\phi$ description
+%so that procedures and functions are replaced by the actual statements they implement.
+
+%\subsection{Data Types}
+%A tuple represents a state
+
+%\subsection{Procedures}
+%\subsection{Functions}
+%\subsection{Rules}
+
+%\subsection{Statements}
+%All statements are supported except $Undefine/clear$ since 
 
 %-----------------------------------------------------------------
 % Revision History 
 % $Log: m2e_mapping.tex,v $
+% Revision 1.2  2009/02/18 05:14:58  depaulfm
+% Updated text to include a top-down description of the translation between murphi and preach
+%
 % Revision 1.1  2009/02/14 04:01:25  depaulfm
 % Bootstrapping documentation for preach
 %
