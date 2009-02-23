@@ -29,28 +29,17 @@
 
 -export([reach/4,start/3]).
 
-% int_reach.erl: A terrible names that needs to be changed.
-%		 For now, it means "sequential version of preach"
-% Brad Bingham, 13/02/09
-% Inputs: Start,Trans,End
-%		Start is a list of integer start states
-%		Trans is a list of integer transitions
-%		End is the integer state we're looking for
-% For example, if {Start,Trans,End} is {[2],[5,6],25},
-% the first states we generate are {2+5, 2+6} = {7,8},
-% and the end state will be found since 25 = 2+6+6+6+5.
-
 %%----------------------------------------------------------------------
 %% Function: start/3
-%% Purpose : 
+%% Purpose : A timing wrapper for our "integer reachability"
+%%	     toy program.
 %% Args    : P is the number of Erlang threads to use;
 %%	     Start is a list of integer start states;
 %%	     Trans is a list of integer transitions;
 %%	     End is the integer state we're looking for
-%% Returns :
+%% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
-% timing wrapper
 start(Start,Steps,End)->
   	T0 = now(),
   	reach(Start,Steps,End,sets:new()),
@@ -59,25 +48,27 @@ start(Start,Steps,End)->
 
 %%----------------------------------------------------------------------
 %% Function: reach/4
-%% Purpose : 
-%% Args    : 
+%% Purpose : Removes the first state from the list, and adds each element
+%%		of Steps to it, generating length(Steps) new states that
+%%		are appended to the list of states. Recurses until there
+%%		are no further states to process.
+%% Args    : FirstState is the state to remove from the state queue
+%%	     RestStates is the remainder of the state queue
+%%	     Steps is the static list of numbers to add to FirstState
+%%	     End is the state we seek. All states with a value greater
+%%	     than End are discarded.
+%%	     BigList is a set of states that have appeared in the state
+%%	     list already.
 %%
-%% Returns :
+%% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates],Steps,End,BigList) ->
 	NewStates = addState(FirstState, Steps),
-
-	%NewQ1 = lists:usort(RestStates ++ NewStates), % removes duplicate states
-
-	% the following line has terrible performance
-	%NewQ1 = sets:to_list(sets:union(sets:from_list(RestStates), sets:from_list(NewStates))),
-
 	Exceeds = fun(X) -> X > End end,
 	NewStates2 = lists:dropwhile(Exceeds, NewStates), % removes states beyond the boundary
 	EndState = fun(X) -> X == End end,
 	EndFound = lists:any(EndState, NewStates2),
-
 	NewStates3 = sets:subtract(sets:from_list(NewStates2), BigList), % remove states already in the big list
 	NewQ = RestStates ++ sets:to_list(NewStates3),
 
@@ -93,10 +84,13 @@ reach([], _, _,_) ->
 
 %%----------------------------------------------------------------------
 %% Function: addState/2
-%% Purpose : 
-%% Args    : 
+%% Purpose : Generates a new state by summing State and the head of the
+%%	     transition list. Recurses on the rest of the transition list.
+%% Args    : State is the state we're exploring
+%%	     FirstStep is the head of the transition list.
+%%	     RestSteps is the remainder of the list.
 %%
-%% Returns :
+%% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
 addState(State, [FirstStep | RestSteps]) ->
@@ -112,6 +106,9 @@ addState(_, []) ->
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.2  2009/02/23 02:43:31  binghamb
+% Deleted some commented out code and filled in details in function/module headers
+%
 % Revision 1.1  2009/02/14 00:53:47  depaulfm
 % Continue Bootstrapping repository
 %
