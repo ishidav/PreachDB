@@ -27,7 +27,7 @@
 %--------------------------------------------------------------------------------
 -module(seqreach).
 
--export([start/3]).
+-export([start/3, stateMatch/2]).
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -134,6 +134,13 @@ action(Index, State) ->
 		2 ->	{0,0}
 	end.
 
+% may need to allow End to be a list of states, possibly
+% with don't care variables
+stateMatch(State, End) ->
+	Pairs = lists:zip(tuple_to_list(State), tuple_to_list(End)),
+	Eq = fun({X,Y}) -> (X == Y) or (Y == dc) end,
+	lists:all(Eq, Pairs).
+
 
 
 %-------------------------------------------------------------------------------
@@ -141,6 +148,9 @@ action(Index, State) ->
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.4  2009/03/05 23:26:28  binghamb
+% Added matchState function to check for end states with don't care variables. Need to move this function eventually, and clean up some functions/documentation that are now not used.
+%
 % Revision 1.3  2009/03/05 09:12:44  binghamb
 % Augmented with transition function and a toy example.
 %
