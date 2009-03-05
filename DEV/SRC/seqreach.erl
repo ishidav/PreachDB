@@ -27,7 +27,7 @@
 %--------------------------------------------------------------------------------
 -module(seqreach).
 
--export([reach/4,start/3]).
+-export([start/3]).
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -42,7 +42,8 @@
 %%----------------------------------------------------------------------
 start(Start,Steps,End)->
   	T0 = now(),
-  	reach(Start,Steps,End,sets:new()),
+  	reach(Start, End, sets:new()),
+	%reach(Start,Steps,End,sets:new()),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	io:format("Execution time: ~w~n", [Dur]).
 
@@ -63,24 +64,29 @@ start(Start,Steps,End)->
 %% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates],Steps,End,BigList) ->
-	NewStates = addState(FirstState, Steps),
-	Exceeds = fun(X) -> X > End end,
-	NewStates2 = lists:dropwhile(Exceeds, NewStates), % removes states beyond the boundary
+
+%reach([FirstState | RestStates],Steps,End,BigList) ->
+reach([FirstState | RestStates], End, BigList) ->
+	NewStates = transition(FirstState, start),
+	io:format("State ~w transitions to state(s) ~w~n", [FirstState, NewStates]),
+
+	%NewStates = addState(FirstState),
+	%Exceeds = fun(X) -> X > End end,
+	%NewStates2 = lists:dropwhile(Exceeds, NewStates), % removes states beyond the boundary
 	EndState = fun(X) -> X == End end,
-	EndFound = lists:any(EndState, NewStates2),
-	NewStates3 = sets:subtract(sets:from_list(NewStates2), BigList), % remove states already in the big list
-	NewQ = RestStates ++ sets:to_list(NewStates3),
+	EndFound = lists:any(EndState, NewStates),
+	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
+	NewQ = RestStates ++ sets:to_list(NewStates2),
 
 	if EndFound ->
 		io:format("State ~w found!~n", [End]);
 	   NewQ == [] ->
 		io:format("State ~w NOT found!~n", [End]);
 	   true ->
-		reach(NewQ, Steps, End, sets:union(BigList, NewStates3))
-	end;
-reach([], _, _,_) ->
-	ok.
+		reach(NewQ, End, sets:union(BigList, NewStates2))
+	end.
+%reach([], _, _) ->
+%	ok.
 
 %%----------------------------------------------------------------------
 %% Function: addState/2
@@ -100,12 +106,44 @@ addState(State, [FirstStep | RestSteps]) ->
 addState(_, []) ->
 	[].
 
+transition(State, start) ->
+	T = transition(2, State), % 2 is the number of guarded commands
+	[X || X <- T, X /= null];
+transition(0, _) ->
+	[];
+transition(Index, State) ->
+	[guard(Index, State) | transition(Index-1, State)].
+	
+
+guard(Index, State) ->
+	case Index of
+		1 -> 	if 
+				State == {0,0} -> action(Index, State);
+				true -> null
+			end;
+		2 ->	if 
+				((State == {1,0}) or (State == {0,1})) -> action(Index, State);
+				true -> null
+			end
+	end.
+
+% action may be a function of State, but not for the simple example
+action(Index, State) ->
+	case Index of
+		1 -> 	{0,1};
+		2 ->	{0,0}
+	end.
+
+
 
 %-------------------------------------------------------------------------------
 %                             Revision History
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.3  2009/03/05 09:12:44  binghamb
+% Augmented with transition function and a toy example.
+%
 % Revision 1.2  2009/02/23 02:43:31  binghamb
 % Deleted some commented out code and filled in details in function/module headers
 %
