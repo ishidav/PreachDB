@@ -73,8 +73,13 @@ reach([FirstState | RestStates], End, BigList) ->
 	%NewStates = addState(FirstState),
 	%Exceeds = fun(X) -> X > End end,
 	%NewStates2 = lists:dropwhile(Exceeds, NewStates), % removes states beyond the boundary
-	EndState = fun(X) -> X == End end,
+	
+	EndState = fun(X) -> stateMatch(X, End) end,
 	EndFound = lists:any(EndState, NewStates),
+	
+	%EndState = fun(X) -> X == End end,
+	%EndFound = lists:any(EndState, NewStates),
+
 	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
 	NewQ = RestStates ++ sets:to_list(NewStates2),
 
@@ -92,6 +97,8 @@ reach([FirstState | RestStates], End, BigList) ->
 %% Function: addState/2
 %% Purpose : Generates a new state by summing State and the head of the
 %%	     transition list. Recurses on the rest of the transition list.
+%%	     This function is now obsolete. Replaced by transition(); will remove
+%%		after testing with decker's mutex algorithm.
 %% Args    : State is the state we're exploring
 %%	     FirstStep is the head of the transition list.
 %%	     RestSteps is the remainder of the list.
@@ -148,6 +155,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.5  2009/03/07 05:22:19  binghamb
+% End parameter to seqreach:start now can now contain don't cares. For example, seqreach:start([{0,0}],[],{1,dc}).
+%
 % Revision 1.4  2009/03/05 23:26:28  binghamb
 % Added matchState function to check for end states with don't care variables. Need to move this function eventually, and clean up some functions/documentation that are now not used.
 %
