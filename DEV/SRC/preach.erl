@@ -127,7 +127,7 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, BigList) ->
-	NewStates = dek:transition(FirstState, start),
+	NewStates = transition(FirstState, start),
 	io:format("PID ~w: State ~w transitions to state(s) ~w~n", [self(),FirstState, NewStates]),
 	
 	% move stateMatch to gospel later
@@ -255,6 +255,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.4  2009/03/10 20:25:02  binghamb
+% One line change: dek:transition -> transition
+%
 % Revision 1.3  2009/03/10 20:22:37  binghamb
 % Compatable with dek.m. Changed main function start, now preach:start(Start,End,P).
 %
