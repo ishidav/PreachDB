@@ -62,7 +62,7 @@ start(Start,End)->
 reach([FirstState | RestStates], End, BigList) ->
 	% change the following line to reflect the transition for the model we want
 	% for example, dek:transition
-	NewStates = transition(FirstState, start),
+	NewStates = dek:transition(FirstState, start),
 	io:format("State ~w transitions to state(s) ~w~n", [FirstState, NewStates]),
 
 	% move stateMatch to gospel later
@@ -125,6 +125,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.7  2009/03/10 20:22:37  binghamb
+% Compatable with dek.m. Changed main function start, now preach:start(Start,End,P).
+%
 % Revision 1.6  2009/03/10 18:29:09  binghamb
 % Removed old code for toy integer transition problem. seqreach:start is now 2 paramaters. For example, used with dek.erl with seqreach:start([{1,2,1,2,0}],{64,dc,64,dc,dc}).
 %
