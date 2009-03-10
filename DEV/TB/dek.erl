@@ -200,28 +200,28 @@ action(Index, State) ->
 		if C1 == 2 ->
 			{64,element(2,State),element(3,State),element(4,State),element(5,State)};
 		   true ->
-			{4,element(2,State),element(3,State),element(4,State),element(5,State)}%null
+			{4,element(2,State),element(3,State),element(4,State),element(5,State)}
 		end;
 
 	4 ->    C0 = element(2,State), 
 		if C0 == 2 -> 
 			{element(1,State),element(2,State),64,element(4,State),element(5,State)};
 		   true  ->
-			{element(1,State),element(2,State),64,element(4,State),element(5,State)}%null
+			{element(1,State),element(2,State),4,element(4,State),element(5,State)}
 		end;
 
 	5 ->    Tu = element(5,State),
 		if Tu == 1 ->
 			{8,element(2,State),element(3,State),element(4,State),element(5,State)};
 		   true ->
-			{4,element(2,State),element(3,State),element(4,State),element(5,State)}	
+			{2,element(2,State),element(3,State),element(4,State),element(5,State)}	
 		end;
 
 	6 ->   Tu = element(5,State),
 		if Tu == 1 ->
 			{element(1,State),element(2,State),8,element(4,State),element(5,State)};
 		   true ->
-			{element(1,State),element(2,State),4,element(4,State),element(5,State)}	
+			{element(1,State),element(2,State),2,element(4,State),element(5,State)}	
 		end;
 
 	7 ->   {16,1,element(3,State),element(4,State),element(5,State)};
@@ -255,6 +255,9 @@ action(Index, State) ->
 %
 %
 % $Log: dek.erl,v $
+% Revision 1.2  2009/03/10 00:00:19  depaulfm
+% Fixed a few bugs in the action function
+%
 % Revision 1.1  2009/03/09 23:14:16  depaulfm
 % Bootstrapping and debuggin Dek's mutex in gospel
 %
