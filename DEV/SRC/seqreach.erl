@@ -27,59 +27,48 @@
 %--------------------------------------------------------------------------------
 -module(seqreach).
 
--export([start/3, stateMatch/2]).
+-export([start/2, stateMatch/2]).
 
 %%----------------------------------------------------------------------
 %% Function: start/3
 %% Purpose : A timing wrapper for our "integer reachability"
 %%	     toy program.
-%% Args    : P is the number of Erlang threads to use;
-%%	     Start is a list of integer start states;
-%%	     Trans is a list of integer transitions;
-%%	     End is the integer state we're looking for
+%% Args    : Start is a list of integer start states;
+%%			 End is the integer state we're looking for
 %% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
-start(Start,Steps,End)->
+start(Start,End)->
   	T0 = now(),
   	reach(Start, End, sets:new()),
-	%reach(Start,Steps,End,sets:new()),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	io:format("Execution time: ~w~n", [Dur]).
 
 %%----------------------------------------------------------------------
 %% Function: reach/4
 %% Purpose : Removes the first state from the list, and adds each element
-%%		of Steps to it, generating length(Steps) new states that
+%%		of Steps to it, generating new states that
 %%		are appended to the list of states. Recurses until there
-%%		are no further states to process.
+%%		are no further states to process, or the End state is found.
 %% Args    : FirstState is the state to remove from the state queue
 %%	     RestStates is the remainder of the state queue
-%%	     Steps is the static list of numbers to add to FirstState
-%%	     End is the state we seek. All states with a value greater
-%%	     than End are discarded.
+%%	     End is the state we seek
 %%	     BigList is a set of states that have appeared in the state
 %%	     list already.
 %%
 %% Returns : <not used>
 %%     
 %%----------------------------------------------------------------------
-
-%reach([FirstState | RestStates],Steps,End,BigList) ->
 reach([FirstState | RestStates], End, BigList) ->
+	% change the following line to reflect the transition for the model we want
+	% for example, dek:transition
 	NewStates = transition(FirstState, start),
 	io:format("State ~w transitions to state(s) ~w~n", [FirstState, NewStates]),
 
-	%NewStates = addState(FirstState),
-	%Exceeds = fun(X) -> X > End end,
-	%NewStates2 = lists:dropwhile(Exceeds, NewStates), % removes states beyond the boundary
-	
+	% move stateMatch to gospel later
 	EndState = fun(X) -> stateMatch(X, End) end,
 	EndFound = lists:any(EndState, NewStates),
 	
-	%EndState = fun(X) -> X == End end,
-	%EndFound = lists:any(EndState, NewStates),
-
 	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
 	NewQ = RestStates ++ sets:to_list(NewStates2),
 
@@ -93,26 +82,7 @@ reach([FirstState | RestStates], End, BigList) ->
 %reach([], _, _) ->
 %	ok.
 
-%%----------------------------------------------------------------------
-%% Function: addState/2
-%% Purpose : Generates a new state by summing State and the head of the
-%%	     transition list. Recurses on the rest of the transition list.
-%%	     This function is now obsolete. Replaced by transition(); will remove
-%%		after testing with decker's mutex algorithm.
-%% Args    : State is the state we're exploring
-%%	     FirstStep is the head of the transition list.
-%%	     RestSteps is the remainder of the list.
-%%
-%% Returns : <not used>
-%%     
-%%----------------------------------------------------------------------
-addState(State, [FirstStep | RestSteps]) ->
-	NewState = State + FirstStep,
-	% io:format("~w (+~w)==> ~w~n", [State, FirstStep, NewState]), % for debugging
-	[NewState | addState(State, RestSteps)];
-addState(_, []) ->
-	[].
-
+%% Default transition unless we're MC-ing someting specific
 transition(State, start) ->
 	T = transition(2, State), % 2 is the number of guarded commands
 	[X || X <- T, X /= null];
@@ -121,7 +91,7 @@ transition(0, _) ->
 transition(Index, State) ->
 	[guard(Index, State) | transition(Index-1, State)].
 	
-
+%% Default guard
 guard(Index, State) ->
 	case Index of
 		1 -> 	if 
@@ -155,6 +125,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: seqreach.erl,v $
+% Revision 1.6  2009/03/10 18:29:09  binghamb
+% Removed old code for toy integer transition problem. seqreach:start is now 2 paramaters. For example, used with dek.erl with seqreach:start([{1,2,1,2,0}],{64,dc,64,dc,dc}).
+%
 % Revision 1.5  2009/03/07 05:22:19  binghamb
 % End parameter to seqreach:start now can now contain don't cares. For example, seqreach:start([{0,0}],[],{1,dc}).
 %
