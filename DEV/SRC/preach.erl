@@ -44,7 +44,7 @@ start(Start,End,P) ->
  	T0 = now(),
 	Names = initThreads([], P,End), 
 	sendStates(Start, Names), 
-	reach([], End, Names,sets:new()), % if this returns, End was not found
+	reach([], End, Names,dict:new()), % if this returns, End was not found
 	io:format("=== State ~w was not found ===~n", [End]),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	io:format("Execution time: ~w~n", [Dur]),
@@ -103,7 +103,7 @@ startWorker(End) ->
     receive
         Names -> do_nothing % dummy RHS
     end,
-	reach([], End, Names,sets:new()),
+	reach([], End, Names,dict:new()),
 	ok.
 
 %%----------------------------------------------------------------------
@@ -127,9 +127,7 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, BigList) ->
-	%io:format("entering reach/4~n"),
-	IsOldState = sets:is_element(FirstState, BigList),
-	%io:format("about to enter the outer-if~n"),
+	IsOldState = dict:is_key(FirstState, BigList),
 	if IsOldState ->
 		reach(RestStates, End, Names, BigList);
 	true ->	
@@ -140,16 +138,13 @@ reach([FirstState | RestStates], End, Names, BigList) ->
 		EndState = fun(X) -> stateMatch(X, End) end,
 		EndFound = lists:any(EndState, NewStates),
 
-	%	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
 		if EndFound ->
 			io:format("=== State ~w found by PID ~w ===~n", [End,self()]),
-			io:format("PID ~w: # states visited was ~w~n", [self(), sets:size(BigList)]),
+			io:format("PID ~w: # states visited was ~w~n", [self(), dict:size(BigList)]),
 			terminateAll(Names);
 		true ->
-	%		io:format("about to recurse. FirstState is ~w, BigList size is ~w~n", [FirstState, sets:size(BigList)]), 
 			sendStates(NewStates, Names),
-			%sendStates(sets:to_list(NewStates), Names),
-			reach(RestStates, End, Names, sets:add_element(FirstState, BigList)) % grow the big list
+			reach(RestStates, End, Names, dict:append(FirstState, true, BigList)) % grow the big list
 		end
 	end;
 
@@ -177,14 +172,14 @@ reach([], End, Names, BigList) ->
 checkMessageQ(timeout, BigList) ->
 	receive
 	die -> 
-		io:format("PID ~w: # unique expanded states was ~w~n", [self(), sets:size(BigList)]),
+		io:format("PID ~w: # unique expanded states was ~w~n", [self(), dict:size(BigList)]),
 		exit(normal);
         State ->
 %		io:format("PID ~w received state ~w~n", [self(), State]), % for debugging
 		[State | checkMessageQ(notimeout,BigList)]
 	after 
 		1000 -> % wait for 1000 ms   
-		io:format("PID ~w: # unique expanded states was ~w~n", [self(), sets:size(BigList)]),
+		io:format("PID ~w: # unique expanded states was ~w~n", [self(), dict:size(BigList)]),
 			[] 
 	end;
 
@@ -192,7 +187,7 @@ checkMessageQ(timeout, BigList) ->
 checkMessageQ(notimeout,BigList) ->
 	receive
 	die -> 
-		io:format("PID ~w: # unique expanded states was ~w~n", [self(), sets:size(BigList)]),
+		io:format("PID ~w: # unique expanded states was ~w~n", [self(), dict:size(BigList)]),
 		exit(normal);
         State ->
 %		io:format("PID ~w received state ~w~n", [self(), State]), % for debugging
@@ -264,6 +259,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.6  2009/03/14 00:47:21  binghamb
+% Changed from using sets to dict for storing states.
+%
 % Revision 1.5  2009/03/14 00:20:44  binghamb
 % No longer caching ALL states generated. Instead, store all states OWNED by a given processor. This change increases the number of messages but decreases the upper bound on memory per process.
 %
