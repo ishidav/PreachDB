@@ -127,21 +127,30 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, BigList) ->
-	NewStates = transition(FirstState, start),
-	io:format("PID ~w: State ~w transitions to state(s) ~w~n", [self(),FirstState, NewStates]),
+	%io:format("entering reach/4~n"),
+	IsOldState = sets:is_element(FirstState, BigList),
+	%io:format("about to enter the outer-if~n"),
+	if IsOldState ->
+		reach(RestStates, End, Names, BigList);
+	true ->	
+		NewStates = stress:transition(FirstState, start),
+%		io:format("PID ~w: State ~w transitions to state(s) ~w~n", [self(),FirstState, NewStates]),
 	
-	% move stateMatch to gospel later
-	EndState = fun(X) -> stateMatch(X, End) end,
-	EndFound = lists:any(EndState, NewStates),
+	%	move stateMatch to gospel later
+		EndState = fun(X) -> stateMatch(X, End) end,
+		EndFound = lists:any(EndState, NewStates),
 
-	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
-	if EndFound ->
-		io:format("=== State ~w found by PID ~w ===~n", [End,self()]),
-		io:format("PID ~w: # unique expanded states was ~w~n", [self(), sets:size(BigList)]),
-		terminateAll(Names);
-	   true -> 
-		sendStates(sets:to_list(NewStates2), Names),
-		reach(RestStates, End, Names, sets:union(BigList, NewStates2)) % grow the big list
+	%	NewStates2 = sets:subtract(sets:from_list(NewStates), BigList), % remove states already in the big list
+		if EndFound ->
+			io:format("=== State ~w found by PID ~w ===~n", [End,self()]),
+			io:format("PID ~w: # states visited was ~w~n", [self(), sets:size(BigList)]),
+			terminateAll(Names);
+		true ->
+	%		io:format("about to recurse. FirstState is ~w, BigList size is ~w~n", [FirstState, sets:size(BigList)]), 
+			sendStates(NewStates, Names),
+			%sendStates(sets:to_list(NewStates), Names),
+			reach(RestStates, End, Names, sets:add_element(FirstState, BigList)) % grow the big list
+		end
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
@@ -255,6 +264,9 @@ stateMatch(State, End) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.5  2009/03/14 00:20:44  binghamb
+% No longer caching ALL states generated. Instead, store all states OWNED by a given processor. This change increases the number of messages but decreases the upper bound on memory per process.
+%
 % Revision 1.4  2009/03/10 20:25:02  binghamb
 % One line change: dek:transition -> transition
 %
