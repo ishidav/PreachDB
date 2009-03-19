@@ -28,7 +28,7 @@
 %--------------------------------------------------------------------------------
 -module(stress).
 
--export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1]).
+-export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1,intToState/1,stateToInt/1]).
 
 transition(State, start) ->
         T = transition(7, State), % 6 is the number of guarded commands
@@ -83,6 +83,27 @@ stateToBits(State) ->
 	G = element(7,State),
 	<<A:4,B:4,C:4,D:4,E:4,F:4,G:4>>.
 
+stateToInt(State) ->
+	1*element(1,State)
+	+10*element(2,State)
+	+100*element(3,State)
+	+1000*element(4,State)
+	+10000*element(5,State)
+	+100000*element(6,State)
+	+1000000*element(7,State).
+
+intToState(Int) ->
+	A = Int rem 10,
+	B = (Int div 10) rem 10,
+	C = (Int div 100) rem 10,
+	D = (Int div 1000) rem 10,
+	E = (Int div 10000) rem 10,
+	F = (Int div 100000) rem 10,
+	G = (Int div 1000000) rem 10,
+	{A,B,C,D,E,F,G}.
+
+
+
 %%----------------------------------------------------------------------
 %% Function: bitsToState/1
 %% Purpose : Converts a bit string to a tuple of integers. 
@@ -105,6 +126,9 @@ bitsToState(Bits) ->
 %
 %
 % $Log: stress.erl,v $
+% Revision 1.2  2009/03/19 20:58:37  binghamb
+% Added functions for expressing up to an 8-tuple as an integer
+%
 % Revision 1.1  2009/03/18 23:19:09  binghamb
 % Initial checkin of stress test transition system.
 %
