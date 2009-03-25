@@ -31,7 +31,7 @@
 -export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1,intToState/1,stateToInt/1]).
 
 transition(State, start) ->
-        T = transition(7, State), % 6 is the number of guarded commands
+        T = transition(6, State), % 6 is the number of guarded commands
         [X || X <- T, X /= null];
 transition(0, _) ->
         [];
@@ -48,18 +48,18 @@ guard(Index, State) ->
 	3 -> action(Index,State);
 	4 -> action(Index,State);
 	5 -> action(Index,State);
-	6 -> action(Index,State);
-	7 -> action(Index,State)
+	6 -> action(Index,State)
+%	7 -> action(Index,State)
 	end.	     
 		 
 % action may be a function of State, but not for the simple example
 action(Index, State) ->
 % odd  refers to p=0
 % even refers to p=1
-	if Index /= 7 ->
+	if Index /= 6 ->
 			setelement(Index,State,(element(Index,State)+1) rem 10); % 10 is the number of values
 		true -> 
-			setelement(7,State,(element(7,State)+1) rem 1) % want 1 M states
+			setelement(6,State,(element(6,State)+1) rem 8) % want 0.8 M states
 	end.
 
 %%----------------------------------------------------------------------
@@ -89,8 +89,8 @@ stateToInt(State) ->
 	+100*element(3,State)
 	+1000*element(4,State)
 	+10000*element(5,State)
-	+100000*element(6,State)
-	+1000000*element(7,State).
+	+100000*element(6,State).
+	%+1000000*element(7,State).
 
 intToState(Int) ->
 	A = Int rem 10,
@@ -99,9 +99,9 @@ intToState(Int) ->
 	D = (Int div 1000) rem 10,
 	E = (Int div 10000) rem 10,
 	F = (Int div 100000) rem 10,
-	G = (Int div 1000000) rem 10,
-	{A,B,C,D,E,F,G}.
-
+	%G = (Int div 1000000) rem 10,
+	%{A,B,C,D,E,F,G}.
+	{A,B,C,D,E,F}.
 
 
 %%----------------------------------------------------------------------
@@ -126,8 +126,8 @@ bitsToState(Bits) ->
 %
 %
 % $Log: stress.erl,v $
-% Revision 1.2  2009/03/19 20:58:37  binghamb
-% Added functions for expressing up to an 8-tuple as an integer
+% Revision 1.3  2009/03/25 00:49:39  binghamb
+% Changed to 800K states for debugging preach.
 %
 % Revision 1.1  2009/03/18 23:19:09  binghamb
 % Initial checkin of stress test transition system.
