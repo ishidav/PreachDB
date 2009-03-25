@@ -28,7 +28,7 @@
 %--------------------------------------------------------------------------------
 -module(stress).
 
--export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1,intToState/1,stateToInt/1]).
+-export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1,intToState/1,stateToInt/1,stateMatch/2]).
 
 transition(State, start) ->
         T = transition(6, State), % 6 is the number of guarded commands
@@ -61,6 +61,13 @@ action(Index, State) ->
 		true -> 
 			setelement(6,State,(element(6,State)+1) rem 8) % want 0.8 M states
 	end.
+
+% may need to allow Pattern to be a list of states, possibly
+% with don't care variables
+stateMatch(State, Pattern) ->
+	Pairs = lists:zip(tuple_to_list(State), tuple_to_list(Pattern)),
+	Eq = fun({X,Y}) -> (X == Y) or (Y == dc) end,
+	lists:all(Eq, Pairs).
 
 %%----------------------------------------------------------------------
 %% Function: stateToBits/1
@@ -126,6 +133,9 @@ bitsToState(Bits) ->
 %
 %
 % $Log: stress.erl,v $
+% Revision 1.4  2009/03/25 23:56:17  binghamb
+% Moved stateMatch from preach.erl and set contants for testing a model with 800K states.
+%
 % Revision 1.3  2009/03/25 00:49:39  binghamb
 % Changed to 800K states for debugging preach.
 %
