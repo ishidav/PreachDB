@@ -32,14 +32,14 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
-mynode(_Index) -> brad@marmot.cs.ubc.ca;
-mynode(Index) -> 
-	lists:nth(1+((Index-1) rem 2), [
-			brad@marmot.cs.ubc.ca,
-			brad@okanagan.cs.ubc.ca
-			%brad@ayeaye.cs.ubc.ca,	
-			%brad@avahi.cs.ubc.ca
-			]).
+mynode(_Index) -> brad@ayeaye.cs.ubc.ca.
+%mynode(Index) -> 
+%	lists:nth(1+((Index-1) rem 2), [
+%			brad@ayeaye.cs.ubc.ca,
+%			brad@okanagan.cs.ubc.ca,
+%			brad@marmot.cs.ubc.ca,	
+%			brad@avahi.cs.ubc.ca
+%			]).
 % other machines: 
 % brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
 
@@ -73,7 +73,9 @@ start(Start,End,P) ->
 	
 	sendStates(Start, Names),
 	NumSent = length(Start),
-	reach([], End, Names,dict:new(),{NumSent,0}), % if this returns, End was not found
+	TableID = ets:new(big_list, [set, private]),
+	reach([], End, Names,TableID,{NumSent,0}),
+	ets:delete(TableID),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
 	NumStates = waitForTerm(Names, 0),
@@ -86,6 +88,7 @@ start(Start,End,P) ->
 	io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
 	io:format("\tExecution time: ~f seconds~n", [Dur]),
 	io:format("\tStates visited per second: ~w~n", [trunc(NumStates/Dur)]),
+	io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
 	io:format("----------~n"),
 	done.	
 
@@ -102,7 +105,7 @@ purgeRecQ(Count) ->
 		_Garbage ->
 			purgeRecQ(Count+1)
 	after
-		0 ->
+		100 ->
 			Count
 	end.
 
@@ -141,7 +144,8 @@ initThreads(Names, NumThreads, Data) ->
 	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
 	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data),
-	ID ! FullNames. % send each worker the PID list
+	ID ! {FullNames, names},
+	FullNames. % send each worker the PID list
 
 %%----------------------------------------------------------------------
 %% Function: startWorker/1
@@ -154,9 +158,9 @@ initThreads(Names, NumThreads, Data) ->
 %%----------------------------------------------------------------------
 startWorker(End) ->
     receive
-        Names -> do_nothing % dummy RHS
+        {Names, names} -> do_nothing % dummy RHS
     end,
-	reach([], End, Names,dict:new(),{0,0}),
+	reach([], End, Names,ets:new(big_list, [set,private]),{0,0}),
 	io:format("PID ~w: Worker is done~n", [self()]),
 	ok.
 
@@ -179,7 +183,7 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
-	IsOldState = dict:is_key(FirstState, BigList),
+	IsOldState = ets:member(BigList, FirstState), %dict:is_key(FirstState, BigList),
 	if IsOldState ->
 		reach(RestStates, End, Names, BigList, {NumSent, NumRecd});
 	true ->
@@ -194,17 +198,19 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
 		end,
 		sendStates(NewStates, Names),
 		NewNumSent = NumSent + length(NewStates),
-		reach(RestStates, End, Names, dict:append(FirstState, true, BigList), {NewNumSent, NumRecd}) % grow the big list
+		ets:insert(BigList, {FirstState}),
+		reach(RestStates, End, Names, BigList, {NewNumSent, NumRecd}) % grow the big list
+%		reach(RestStates, End, Names, dict:append(FirstState, true, BigList), {NewNumSent, NumRecd}) % grow the big list
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, BigList, {NumSent, NumRecd}) ->
-	Ret = checkMessageQ(timeout, dict:size(BigList), Names, {NumSent, NumRecd}, 0, []),
+	TableSize = element(2,lists:nth(4,ets:info(BigList))),
+	Ret = checkMessageQ(timeout, TableSize, Names, {NumSent, NumRecd}, 0, []),
 	if Ret == done ->
 			done;
 	   true ->
 		{NewQ, NewNumRecd} = Ret,
-%		NewQ2 = lists:usort(NewQ), % remove any duplicate states
 		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd})
 	end.
 
@@ -267,8 +273,8 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
 	receive
 	% could check for pause messages here
-        {State, state} ->
-		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1}, Depth+1, [State|NewStates]);
+	{State, state} ->
+		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},Depth+1, [State|NewStates]);
 	die -> 
 		terminateMe(BigListSize, rootPID(Names))
 	after 
@@ -319,6 +325,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.10  2009/03/28 00:59:35  binghamb
+% Using ets table instead of dict; fixed a bug related to not tagging the PID lis with an atom when sending.
+%
 % Revision 1.9  2009/03/25 23:54:44  binghamb
 % Fixed the deadlock bug; now all termination signals come from the root only. Cleaned up some code and moved the default model to tiny.erl.
 %
