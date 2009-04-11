@@ -1,4 +1,4 @@
-%$Id: m2e_mapping.tex,v 1.3 2009/02/23 18:50:58 depaulfm Exp $
+%$Id: m2e_mapping.tex,v 1.4 2009/04/11 00:44:10 depaulfm Exp $
 \chapter{Mur$\phi$ to Erlang Mapping}
 
 \section{Semantic Mapping}
@@ -20,36 +20,51 @@ all this is saying is that each fired rule is executed in an arbitrary order.
 Therefore, we should preserve that semantic when mapping a $mur\phi$ model into
 a $preach$ model.
 
-Let's start by looking at how we encode a state in $preach$. Figure~\label{Sst} gives
-a syntax tree for a $state$ description. Each state is represented by a 'label'
-and a \underline{list}\footnote{Every underline word refers to an Erlang data-type or
+Let's start by looking at how we encode a state in $preach$. Figure~\ref{fig:Sst} gives
+a syntax tree for a $state$ description. Each state is represented by 
+a \underline{list}\footnote{Every underline word refers to an Erlang data-type or
 keyword} 
- of 'encodings'. Both 'label' and 'encodings' are integers for now. We use the 
-state's label to define which process owns it. 
+ of 'encodings'. This \underline{list} preserves a priori defined order of the models'
+variables. A bound integer represents each 'encoding'.
 As in  $mur\phi$, we implement the transition relation in Erlang as a set of rules.
-In Figure~\label{TRst}, we define the syntax tree for the transition relation (TR). 
+In Figure~\ref{TRst}, we define the syntax tree for the transition relation. 
 In order to preserve $mur\phi$'s semantics we encode the transition relation as
-in Figure~\label{TRerl}.
+in Figure~\ref{TRerl}.
 %remember to describe how each guard is evaluated, each action is called and what
 %murphi statements we are covering 
 
 \begin{figure}
 \begin{verbatim} 
-<state>    ::= (label,encoding)
-<label>    ::= integer
+<state>    ::= <encoding>
 <encoding> ::= {integer [, integer] }
+<state[i]  ::= integer
 \end{verbatim}
 \caption{State Syntax Tree}
-\label{Sst}
+\label{fig:Sst}
 \end{figure}
 
 
 \begin{figure}
 \begin{verbatim} 
-<TR>    ::= {rule [; rule]}
-<rule>  ::= (<guard>,<action>)
-<guard> ::= <boolean_expression>
-<action>::= { <murphi_statements> }
+<transition>  ::= {<rule> [; <rule>]}
+<rule>        ::= guard \( <index>, <state> \) ->
+                  case <index> of  
+                  [ integer -> <expr> -> 
+                              action \( <index>, <state> \)]
+
+<expr>        ::=  \( expr \)
+	             | <state>
+	             | <state[i]>
+	             | <integer>
+	             | <expr> < <expr>
+	             | <expr> <= <expr>
+	             | <expr> > <expr>
+	             | <expr> >= <expr>
+	             | <expr> == <expr>
+	             | <expr> != <expr>
+
+<guard>       ::=
+<action>      ::= { <murphi_statements> [; <murphi_statements>] }
 \end{verbatim}
 \caption{Transition Relation Syntax Tree}
 \label{TRst}
@@ -57,12 +72,11 @@ in Figure~\label{TRerl}.
 
 \begin{algorithm}
 \begin{algorithmic}
-\STATE $function$ TR (integer: index, list: state)
-\STATE \ [ S' $|$ guard(index,state) ],
-\STATE \ TR(index-1,state);
+\STATE $function$ transition (integer: index, list: state)
+\STATE \ [ guard(index,state) $|$ transition (index-1,state) ];
 \newline
-\STATE $function$ TR (0, list: state)
-\STATE \ \{[ S' ]\}.
+\STATE $function$ transition (0, list: state)
+\STATE \ [].
 \newline
 \STATE $function$ guard (integer: index, list: state)
 \IF {index = 0} 
@@ -105,6 +119,9 @@ in Figure~\label{TRerl}.
 %-----------------------------------------------------------------
 % Revision History 
 % $Log: m2e_mapping.tex,v $
+% Revision 1.4  2009/04/11 00:44:10  depaulfm
+% Checking in changes last made on 2009-Mar-02
+%
 % Revision 1.3  2009/02/23 18:50:58  depaulfm
 % 1st cut at pseudocode for TR
 %
