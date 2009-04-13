@@ -25,18 +25,18 @@
 % along with this program; if not, write to the Free Software
 % Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 %--------------------------------------------------------------------------------
--module(preach).
+-module(preach_dict).
 % -compile(inline). %inlines all functions of 24 lines or less
 -export([start/3,startWorker/1]).
 
 %% configuration-type functions
 timeoutTime() -> 3000.
 
-mynode(_Index) -> brad@ayeaye.cs.ubc.ca.
+mynode(_Index) -> brad@marmot.cs.ubc.ca.
 %mynode(Index) -> 
 %	lists:nth(1+((Index-1) rem 2), [
-%			brad@ayeaye.cs.ubc.ca,
-%			brad@okanagan.cs.ubc.ca,
+%			brad@marmot.cs.ubc.ca,
+%			brad@ayeaye.cs.ubc.ca
 %			brad@marmot.cs.ubc.ca,	
 %			brad@avahi.cs.ubc.ca
 %			]).
@@ -55,7 +55,7 @@ decompressState(CompressedState) ->
 
 %% end of configuration-type functions
 
-rootPID(Names) -> hd(Names).
+rootPID(Names) -> dict:fetch(1,Names). % hd(Names).
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -74,11 +74,12 @@ start(Start,End,P) ->
 	sendStates(Start, Names),
 	NumSent = length(Start),
 	TableID = ets:new(big_list, [set, private]),
+
 	reach([], End, Names,TableID,{NumSent,0}),
 	ets:delete(TableID),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
-	NumStates = waitForTerm(Names, 0),
+	NumStates = waitForTerm(dictToList(Names), 0),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	NumPurged = purgeRecQ(0),
 
@@ -123,9 +124,11 @@ sendStates([], _Names) ->
 	ok;
 
 sendStates([First | Rest], Names) ->
-	Owner = lists:nth(1+erlang:phash2(First,length(Names)),Names),
+%	Owner = lists:nth(1+erlang:phash2(First,length(Names)),Names),
+	Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
 	Owner ! {compressState(First), state},
 	sendStates(Rest, Names).
+
 
 %%----------------------------------------------------------------------
 %% Function: initThreads/3
@@ -138,10 +141,13 @@ sendStates([First | Rest], Names) ->
 %%     
 %%----------------------------------------------------------------------
 initThreads(Names, 1, _Data) ->	
-	[self() | Names];
+	NamesList = [self() | Names],
+	NamesDict = dict:from_list(lists:zip(lists:seq(1,length(NamesList)), NamesList)),
+	NamesDict;
+
 % Data is just End right now
 initThreads(Names, NumThreads, Data) ->
-	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
+	ID = spawn(mynode(NumThreads),preach_dict,startWorker,[Data]),
 	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data),
 	ID ! {FullNames, names},
@@ -211,8 +217,14 @@ reach([], End, Names, BigList, {NumSent, NumRecd}) ->
 			done;
 	   true ->
 		{NewQ, NewNumRecd} = Ret,
+
+		%reach(lists:usort(lists:filter(fun(X) -> ets:member(BigList,X)==false end, NewQ)),End, Names, BigList, {NumSent, NewNumRecd}) 
+		%reach([X || X <- NewQ, ets:member(BigList,X) == false], End, Names, BigList, {NumSent, NewNumRecd}) 
 		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd})
 	end.
+
+
+dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 
 %%----------------------------------------------------------------------
 %% Function: checkMessageQ/5-6
@@ -234,7 +246,8 @@ reach([], End, Names, BigList, {NumSent, NumRecd}) ->
 %%----------------------------------------------------------------------
 checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 %	io:format("PID ~w: checking my message queue; ~w messages received so far~n", [self(), NumRecd]), % for debugging
-	Timeout = if hd(Names) == self() -> timeoutTime(); true -> infinity end,
+	IsRoot = rootPID(Names) == self(),
+	Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
 	receive
 	{State, state} ->
 		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0, [State|NewStates]);
@@ -249,19 +262,19 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 	die -> 
 		terminateMe(BigListSize, rootPID(Names));
 	end_found -> 
-		terminateAll(tl(Names)),
+		terminateAll(tl(dictToList(Names))),
 		terminateMe(BigListSize, rootPID(Names))
 	after Timeout -> % wait for timeoutTime() ms if root 
 		io:format("PID ~w: Root has timed out, polling workers now...~n", [self()]),
-		CommAcc = pollWorkers(Names, {NumSent, NumRecd}),
+		CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
 		CheckSum = element(1,CommAcc) - element(2,CommAcc),
 		if CheckSum == 0 ->	% time to die
 			io:format("=== No End states were found ===~n"),
-			terminateAll(tl(Names)),
+			terminateAll(tl(dictToList(Names))),
 			terminateMe(BigListSize, rootPID(Names));
 		true ->	% resume other processes and wait again for new states or timeout
 			io:format("PID ~w: unusual, checksum is ~w, will wait again for timeout...~n", [self(),CheckSum]),
-			resumeWorkers(tl(Names)),
+			resumeWorkers(tl(dictToList(Names))),
 			checkMessageQ(timeout,BigListSize,Names,{NumSent,NumRecd},0, NewStates)
 		end
 	end;
@@ -325,6 +338,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.11  2009/04/13 18:15:37  binghamb
+% List of PIDs now implemented with a dict instead of an erlang list
+%
 % Revision 1.10  2009/03/28 00:59:35  binghamb
 % Using ets table instead of dict; fixed a bug related to not tagging the PID lis with an atom when sending.
 %
