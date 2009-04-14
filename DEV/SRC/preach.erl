@@ -25,7 +25,7 @@
 % along with this program; if not, write to the Free Software
 % Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 %--------------------------------------------------------------------------------
--module(preach_dict).
+-module(preach).
 % -compile(inline). %inlines all functions of 24 lines or less
 -export([start/3,startWorker/1]).
 
@@ -147,7 +147,7 @@ initThreads(Names, 1, _Data) ->
 
 % Data is just End right now
 initThreads(Names, NumThreads, Data) ->
-	ID = spawn(mynode(NumThreads),preach_dict,startWorker,[Data]),
+	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
 	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data),
 	ID ! {FullNames, names},
@@ -338,6 +338,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.12  2009/04/14 18:31:50  binghamb
+% Fixed incorrect module name in previous commit
+%
 % Revision 1.11  2009/04/13 18:15:37  binghamb
 % List of PIDs now implemented with a dict instead of an erlang list
 %
