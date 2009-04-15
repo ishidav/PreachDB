@@ -28,7 +28,10 @@
 %--------------------------------------------------------------------------------
 -module(stress).
 
--export([transition/2, guard/2, action/2, bitsToState/1, stateToBits/1,intToState/1,stateToInt/1,stateMatch/2]).
+%
+% Exports the main routines defined in preach.erl
+%
+-export([start/3,startWorker/1]).
 
 transition(State, start) ->
         T = transition(6, State), % 6 is the number of guarded commands
@@ -128,11 +131,23 @@ bitsToState(Bits) ->
 	{A,B,C,D,E,F,G}.
 
 
+%%----------------------------------------------------------------------
+%% 
+%% Purpose : Includes the model checker module
+%%				
+%% Requires: Environment variable PREACH_PATH to be set pointing to
+%%	     preach's root directory
+%%
+-include("$PREACH_PATH/DEV/SRC/preach.erl").
+
 %-------------------------------------------------------------------------------
 %                             Revision History
 %
 %
 % $Log: stress.erl,v $
+% Revision 1.5  2009/04/15 16:24:20  depaulfm
+% Changed interface; Gospel code should include preach.erl and export its called functions; Requires PREACH_PATH env variable set
+%
 % Revision 1.4  2009/03/25 23:56:17  binghamb
 % Moved stateMatch from preach.erl and set contants for testing a model with 800K states.
 %
