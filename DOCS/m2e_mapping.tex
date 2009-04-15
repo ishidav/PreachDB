@@ -1,84 +1,92 @@
-%$Id: m2e_mapping.tex,v 1.5 2009/04/15 03:11:54 depaulfm Exp $
+%$Id: m2e_mapping.tex,v 1.6 2009/04/15 17:58:46 depaulfm Exp $
 \chapter{Mur$\phi$ to Erlang Mapping}
 
 \section{Semantic Mapping}
 
-The main syntactic construct of a $mur\phi$ model is $rule$. The $rule$ 
-construct implements
-the guarded-commands semantic of $mur\phi$. A $rule$ comprises a $guard$ and a set
-of $actions$. A $guard$ is an expression that evaluates to true (we say then that the 
-guard is enabled) or false. 
-%A set of $actions$ is a set of statements that implements
-An action changes a state.
+% The main syntactic construct of a $mur\phi$ model is $rule$. The $rule$ 
+% construct implements
+% the guarded-commands semantic of $mur\phi$. A $rule$ comprises a $guard$ and a set
+% of $actions$. A $guard$ is an expression that evaluates to true (we say then that the 
+% guard is enabled) or false. 
+% %A set of $actions$ is a set of statements that implements
+% An action changes a state.
 
-a transition from a state to another. Statements are treated as ordinary constructs
-that are 'easily' mapped to $functional$ $programming$ constructs. The important
-semantic mapping, however, is the translation of $mur\phi$'s state and 
-transition-relations encoding to $preach$.
-Note that a state of a $mur\phi$ model is global. All state manipulation is atomic, 
-however.
-%The $rule$ construct enforces atomicity. When multiple rules' guard enable instead of fire, each
-%rules' actions are atomically and non-deterministically executed --- 
-%all this is saying is that each fired rule is executed in an arbitrary order.
-A $preach$ model shall preserve this semantic when mapped from a $mur\phi$ model
+% a transition from a state to another. Statements are treated as ordinary constructs
+% that are 'easily' mapped to $functional$ $programming$ constructs. The important
+% semantic mapping, however, is the translation of $mur\phi$'s state and 
+% transition-relations encoding to $preach$.
+% Note that a state of a $mur\phi$ model is global. All state manipulation is atomic, 
+% however.
+% %The $rule$ construct enforces atomicity. When multiple rules' guard enable instead of fire, each
+% %rules' actions are atomically and non-deterministically executed --- 
+% %all this is saying is that each fired rule is executed in an arbitrary order.
+% A $preach$ model shall preserve this semantic when mapped from a $mur\phi$ model
 
 
-Let's start by looking at how we encode a state in $preach$. Figure~\ref{fig:Sst} gives
-a syntax tree for a $state$ description. Each state is represented by 
-a \underline{record}\footnote{Every underline word refers to an Erlang data-type or
-keyword} of identifiers.  Each identifier represents a system's state variable. A record may 
-contain nested records.  The order of the \underline{record}'s identifiers is identical to 
-the variable declaration order in the original model. A bound integer represents each 
-'encoding'.
+% Let's start by looking at how we encode a state in $preach$. Figure~\ref{fig:Sst} gives
+% a syntax tree for a $state$ description. Each state is represented by 
+% a \underline{record}\footnote{Every underline word refers to an Erlang data-type or
+% keyword} of identifiers.  Each identifier represents a system's state variable. A record may 
+% contain nested records.  The order of the \underline{record}'s identifiers is identical to 
+% the variable declaration order in the original model. A bound integer represents each 
+% 'encoding'.
 
-As in  $mur\phi$, we implement the transition relation in Erlang as a set of rules.
-In Figure~\ref{TRst}, we define the syntax tree for the transition relation. 
-Notice the similarity of $<rules>$, $<rule>$ and $<expr>$ with $mur\phi$.  However,
-we restrict ourselves to binary relations; we do not implement rule aliasing and statements
-are simple assignment statements.
-In Figure~\ref{TRsimplerule}, we present an Erlang pseudo-code to compute the state transition.
-We start by defining the state in terms of \underline{record}. State variables may be
-initialized at the time of the declaration of the record, e.g., $id2$. We declare each rule
-following the syntax defined in Fig.~\ref{TRst}. In particular, E($X\#recordName.any$) is 
-a function that evaluates an expression over the $X\#recordName.any$ state variable.
-The term $dc$ in the second branch of 'when' represents a $dontcare$. Finally, the transition
-function accepts a state as its input and it returns a set of states (successors). Each rule 
-in the $Rules$ set is applied to the state $state$.
-%make sure BNF no comma there  define the tokens
+% As in  $mur\phi$, we implement the transition relation in Erlang as a set of rules.
+% In Figure~\ref{TRst}, we define the syntax tree for the transition relation. 
+% Notice the similarity of $<rules>$, $<rule>$ and $<expr>$ with $mur\phi$.  However,
+% we restrict ourselves to binary relations; we do not implement rule aliasing and statements
+% are simple assignment statements.
+% In Figure~\ref{TRsimplerule}, we present an Erlang pseudo-code to compute the state transition.
+% We start by defining the state in terms of \underline{record}. State variables may be
+% initialized at the time of the declaration of the record, e.g., $id2$. We declare each rule
+% following the syntax defined in Fig.~\ref{TRst}. In particular, E($X\#recordName.any$) is 
+% a function that evaluates an expression over the $X\#recordName.any$ state variable.
+% The term $dc$ in the second branch of 'when' represents a $dontcare$. Finally, the transition
+% function accepts a state as its input and it returns a set of states (successors). Each rule 
+% in the $Rules$ set is applied to the state $state$.
+% %make sure BNF no comma there  define the tokens
+
+% My comments:
+% state = list of records
+% record has only simple atoms or lists
+% to simplify things, let's make encoding a list always (it used to be either an integer or a list of integers
 \begin{figure}
 \begin{verbatim} 
 <state>    ::= \[ <record> \]
-<record>   ::= <ID>[=<encoding>] { , <ID>[=<encoding>] } { , <record> }
-<encoding> ::=  integer | \[ integer  {, integer } \] 
-<ID>       ::=  letter { [_ | letter] }
-
+<record>   ::= <ID>[=<encoding>] { , <ID>[=<encoding>] } 
+               | <record> { , <record> }
+<encoding> ::= \[ integer  {, integer } \] 
+<ID>       ::= letter { [_ | letter] }
 \end{verbatim}
 \caption{State Syntax Tree}
 \label{fig:Sst}
 \end{figure}
 
-
+% My comments:
+% rules is a list of 1 or more rule
+%
 \begin{figure}
 \begin{verbatim}
-<rules>      ::= \[ {<rule> [, <rule>]} \]
-<rule>       ::= <simplerule> | <startstate> | <ruleset> | <invariant> 
-<simplerule> ::= fun(X) when <expr> -> <stmts> { ,<stmts> } ; 
-                                       <stmts> { ,<stmts> } end.  
-<expr>       ::=    ( expr )
-	             | X\#<ID>.<ID>
-	             | integer
-	             | <expr> < <expr>
-	             | <expr> <= <expr>
-	             | <expr> > <expr>
-	             | <expr> >= <expr>
-	             | <expr> == <expr>
-	             | <expr> != <expr>
-
-<stmts>      ::= X\#<ID>\{{ <ID>=<encoding> 
-                                { , <ID>=<encoding> } \}
-
+<rules>      ::= \[ <rule> { , <rule> } \]
+<rule>       ::= <startstate> | <invariant> | <simplerule> | <ruleset>  
 <startstate> ::= \#<ID>\{ <ID>=<encoding> 
                                 { , <ID>=<encoding> } \}
+<invariant>  ::= \#<ID>\{ <ID>=<encoding> 
+                                { , <ID>=<encoding> } \}
+<simplerule> ::= fun(X) when <expr> -> <stmts> { ,<stmts> } ; 
+                                       <stmts> { ,<stmts> } end.  
+<expr>       ::= ( expr )
+                 | X\#<ID>.<ID>
+                 | integer
+                 | <expr> < <expr>
+                 | <expr> <= <expr>
+                 | <expr> > <expr>
+                 | <expr> >= <expr>
+                 | <expr> == <expr>
+                 | <expr> != <expr>
+<stmts>      ::= X\#<ID>\{ <ID>=<encoding> 
+                                { , <ID>=<encoding> } \}
+
 \end{verbatim}
 \caption{Transition Relation Syntax Tree, Part 1}
 \label{TRsta}
@@ -86,26 +94,28 @@ in the $Rules$ set is applied to the state $state$.
 \begin{figure}
 \begin{verbatim}
 <ruleset>    ::= ruleset(X) -> lists:map(fun(X) -> <body> end, X).
-<body>       ::=   <f_atom> [ {< f_atom> ; } ] [<f_record> { <f_records> ; }] 
-<f_atom>      ::= f(X) when is_atom(X, <ID>) ->
-                                 <expr> -> 
-                                    <stmts> { ,<stmts> } ;  
-                                 true ->
-                                   null
-                                 end; 
+<body>       ::= <f_atom> [ <f_record> ]
+                 | <body>
+<f_atom>     ::= f(X) when is_list(X) ->
+                               lists:map(fun(Y) -> 
+                                                 <expr> -> 
+                                                    <stmts> { ,<stmts> } ;  
+                                                  true ->
+                                                    null
+                                                  end; 
+                                         end., 
+                                         X);
 <f_record>   ::= f(X) when is_record(X, <ID>) ->
-                                  lists:map(fun(Y) -> 
-                                                    <expr> -> 
-                                                       <stmts> { ,<stmts> } ;  
-                                                    true ->
-                                                      null
-                                                    end 
-                                          end., 
-                                          X#<ID>);
+                               lists:map(fun(Y) -> 
+                                                 <expr> -> 
+                                                    <stmts> { ,<stmts> } ;  
+                                                 true ->
+                                                   null
+                                                 end 
+                                         end., 
+                                         X#<ID>);
   
 
-<invariant>  ::= \#<ID>\{ <ID>=<encoding> 
-                                { , <ID>=<encoding> } \}
 \end{verbatim}
 \caption{Transition Relation Syntax Tree, Part b}
 \label{TRstb}
@@ -155,10 +165,10 @@ X\#\(recordName\{some\_id = encoding\}\);
 \newline
 \STATE \% Declare rule operations for each record 
 \STATE each(X) when is\_record(X,$recordName1$) $->$
-\STATE \ \ \ \ \ \ \ \ \ \ \ \ \ if is\_list(X\#$recordName1.id1$) $->$
+%\STATE \ \ \ \ \ \ \ \ \ \ \ \ \ if is\_list(X\#$recordName1.id1$) $->$
 \STATE \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ lists:map( fun(Y) $->$ 
                            do\_something(Y) end, X\#$recordName1.id1$);          
-\STATE \ \ \ \ \ \ \ \ \ \ \ \ \ true $->$ do\_something(X\#$recordName1.id1$)
+%\STATE \ \ \ \ \ \ \ \ \ \ \ \ \ true $->$ do\_something(X\#$recordName1.id1$)
 \STATE \ \ \ \ \ \ \ \ \ \ \ \ \ end;
 \STATE each(X) when is\_record(X,$recordName2$) $->$ ... ;
 \STATE $\vdots$
@@ -168,7 +178,7 @@ X\#\(recordName\{some\_id = encoding\}\);
 \STATE State =  [Rec1, Rec2, ..., RecN].
 \newline
 \STATE \% Define rule set, returning the set of next states
-\STATE Ruleset1(State) -> lists:map(fun(X) $->$ each(X), State).
+\STATE Ruleset1(State) $->$ lists:map(fun(X) $->$ each(X), State).
 \caption{Erlang-pseudocode: Transition Relation with $ruleset$}
 \label{TRrulseset}
 \end{algorithmic}
@@ -193,6 +203,9 @@ X\#\(recordName\{some\_id = encoding\}\);
 %-----------------------------------------------------------------
 % Revision History 
 % $Log: m2e_mapping.tex,v $
+% Revision 1.6  2009/04/15 17:58:46  depaulfm
+% Updated all mappings; commented out text since it needs more detail/clarification
+%
 % Revision 1.5  2009/04/15 03:11:54  depaulfm
 % Added new definitions for state and transition system; worked mainly on the figures; text still needs work
 %
