@@ -1,4 +1,4 @@
-%$Id: m2e_mapping.tex,v 1.6 2009/04/15 17:58:46 depaulfm Exp $
+%$Id: m2e_mapping.tex,v 1.7 2009/04/15 18:00:03 depaulfm Exp $
 \chapter{Mur$\phi$ to Erlang Mapping}
 
 \section{Semantic Mapping}
@@ -94,9 +94,9 @@
 \begin{figure}
 \begin{verbatim}
 <ruleset>    ::= ruleset(X) -> lists:map(fun(X) -> <body> end, X).
-<body>       ::= <f_atom> [ <f_record> ]
+<body>       ::= <f_list> [ <f_record> ]
                  | <body>
-<f_atom>     ::= f(X) when is_list(X) ->
+<f_list>     ::= f(X) when is_list(X) ->
                                lists:map(fun(Y) -> 
                                                  <expr> -> 
                                                     <stmts> { ,<stmts> } ;  
@@ -203,6 +203,9 @@ X\#\(recordName\{some\_id = encoding\}\);
 %-----------------------------------------------------------------
 % Revision History 
 % $Log: m2e_mapping.tex,v $
+% Revision 1.7  2009/04/15 18:00:03  depaulfm
+% fixed a lingering typo
+%
 % Revision 1.6  2009/04/15 17:58:46  depaulfm
 % Updated all mappings; commented out text since it needs more detail/clarification
 %
