@@ -25,9 +25,11 @@
 % along with this program; if not, write to the Free Software
 % Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 %--------------------------------------------------------------------------------
--module(preach).
-% -compile(inline). %inlines all functions of 24 lines or less
--export([start/3,startWorker/1]).
+
+%
+% No module/exports defn since they should be included in the bottom of the 
+% gospel code
+%
 
 %% configuration-type functions
 timeoutTime() -> 3000.
@@ -44,12 +46,12 @@ mynode(_Index) -> brad@marmot.cs.ubc.ca.
 % brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
 
 compressState(State) ->
-	stress:stateToInt(State).
+	stateToInt(State).
 %	stress:stateToBits(State).
 %	State.
 
 decompressState(CompressedState) ->
-		stress:intToState(CompressedState).
+		intToState(CompressedState).
 %		stress:bitsToState(CompressedState).
 %		CompressedState.
 
@@ -194,8 +196,8 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
 		reach(RestStates, End, Names, BigList, {NumSent, NumRecd});
 	true ->
 		CurState = decompressState(FirstState),
-		NewStates = stress:transition(CurState, start),
-		EndFound = stress:stateMatch(CurState,End),
+		NewStates = transition(CurState, start),
+		EndFound = stateMatch(CurState,End),
 
 		if EndFound ->
 			io:format("=== End state ~w found by PID ~w ===~n", [End,self()]),
@@ -338,6 +340,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.13  2009/04/15 16:25:17  depaulfm
+% Changed interface; removed module/export definitions; Gospel code should include preach.erl and export its called functions; Requires PREACH_PATH env variable set
+%
 % Revision 1.12  2009/04/14 18:31:50  binghamb
 % Fixed incorrect module name in previous commit
 %
