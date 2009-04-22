@@ -14,7 +14,19 @@
 %    which appears necessary to do the generalization cleanly.  
 %
 
--export([transition/1,startstate/0,dishwasher/1]).
+-export([start/3,startWorker/1]).
+% -export([transition/1,startstate/0]).
+
+
+%%----------------------------------------------------------------------
+%% 
+%% Purpose : Includes the model checker module
+%%				
+%% Requires: Environment variable PREACH_PATH to be set pointing to
+%%	     preach's root directory
+%%
+-include("$PREACH_PATH/DEV/SRC/preach.erl").
+
 
 %
 %  create the list formed by applying all rules to State, but then
@@ -40,6 +52,8 @@ transition(State) ->
 all_false() -> {false,false,false}.
 all_empty() -> {empty,empty,empty}.
 all_invalid() -> {invalid,invalid,invalid}.
+
+stateMatch(State, Pattern) -> dishwasher(State).
 
 -record(murphi_state,
        {
@@ -76,6 +90,14 @@ startstate() ->
      curPtr = 0  % 0 means undefined
    }.
 
+
+   dishwasher(Ms = #murphi_state{}) ->
+		Ms#murphi_state.curCmd == req_s.
+
+    firstTrans(Ms = #murphi_state{}) ->
+ (element(1,Ms#murphi_state.chan1) == req_s) or
+(element(1,Ms#murphi_state.chan1) == req_e).
+
 % ruleset i : NODE; d : DATA do rule "Store"
 %   Cache[i].State = E
 % ==>
@@ -91,7 +113,7 @@ startstate() ->
 send_req_s(Ms = #murphi_state{}, I) ->
     if (element(I,Ms#murphi_state.chan1) == empty) and
        (element(I,Ms#murphi_state.cache) == invalid)
-      -> Ms#murphi_state{chan1 = (setelement(I,Ms#murphi_state.chan1,reqS))};
+      -> Ms#murphi_state{chan1 = (setelement(I,Ms#murphi_state.chan1,req_s))};
     true 
       -> null
     end.
@@ -284,8 +306,6 @@ recv_gnt_e(Ms = #murphi_state{}, I) ->
       -> null
     end.
 
-dishwasher(Ms = #murphi_state{}) ->
-           (Ms#murphi_state.cache == {shared,shared,shared}).
 
 %start() -> io:format("hello world~n",[]),
 %           io:format("hello world 2~n",[]),
