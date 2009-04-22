@@ -281,7 +281,7 @@ send_gnt_e(Ms = #murphi_state{}, I) ->
 %   Chan2[i].Cmd := Empty; undefine Chan2[i].Data;
 % end end;
 recv_gnt_s(Ms = #murphi_state{}, I) ->
-    if ((element(I,Ms#murphi_state.curCmd) == gnt_s))
+    if ((element(I,Ms#murphi_state.chan2) == gnt_s))
       -> Ms#murphi_state{
            cache = (setelement(I,Ms#murphi_state.cache,shared)),
            chan2 = (setelement(I,Ms#murphi_state.chan2,empty))
@@ -297,7 +297,7 @@ recv_gnt_s(Ms = #murphi_state{}, I) ->
 %   Chan2[i].Cmd := Empty; undefine Chan2[i].Data;
 % end end;
 recv_gnt_e(Ms = #murphi_state{}, I) ->
-    if ((element(I,Ms#murphi_state.curCmd) == gnt_e))
+    if ((element(I,Ms#murphi_state.chan2) == gnt_e))
       -> Ms#murphi_state{
            cache = (setelement(I,Ms#murphi_state.cache,exclusive)),
            chan2 = (setelement(I,Ms#murphi_state.chan2,empty))
