@@ -14,7 +14,7 @@
 %    which appears necessary to do the generalization cleanly.  
 %
 
--export([transition/1,startstate/0]).
+-export([transition/1,startstate/0,dishwasher/1]).
 
 %
 %  create the list formed by applying all rules to State, but then
@@ -283,6 +283,9 @@ recv_gnt_e(Ms = #murphi_state{}, I) ->
     true 
       -> null
     end.
+
+dishwasher(Ms = #murphi_state{}) ->
+           (Ms#murphi_state.cache == {shared,shared,shared}).
 
 %start() -> io:format("hello world~n",[]),
 %           io:format("hello world 2~n",[]),
