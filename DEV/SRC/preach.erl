@@ -37,8 +37,8 @@ timeoutTime() -> 3000.
 mynode(_Index) -> brad@marmot.cs.ubc.ca.
 %mynode(Index) -> 
 %	lists:nth(1+((Index-1) rem 2), [
-%			brad@marmot.cs.ubc.ca,
-%			brad@ayeaye.cs.ubc.ca
+%			brad@ayeaye.cs.ubc.ca,
+%			brad@avahi.cs.ubc.ca
 %			brad@marmot.cs.ubc.ca,	
 %			brad@avahi.cs.ubc.ca
 %			]).
@@ -46,14 +46,14 @@ mynode(_Index) -> brad@marmot.cs.ubc.ca.
 % brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
 
 compressState(State) ->
-	stateToInt(State).
+%	stateToInt(State).
 %	stress:stateToBits(State).
-%	State.
+	State.
 
 decompressState(CompressedState) ->
-		intToState(CompressedState).
+%		intToState(CompressedState).
 %		stress:bitsToState(CompressedState).
-%		CompressedState.
+		CompressedState.
 
 %% end of configuration-type functions
 
@@ -73,8 +73,10 @@ start(Start,End,P) ->
  	T0 = now(),
 	Names = initThreads([], P,End),
 	
-	sendStates(Start, Names),
-	NumSent = length(Start),
+	% ignoring Start parameter
+	%sendStates(Start, Names),
+	sendStates([startstate()],Names),
+	NumSent = length([startstate()]),
 	TableID = ets:new(big_list, [set, private]),
 
 	reach([], End, Names,TableID,{NumSent,0}),
@@ -196,7 +198,7 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
 		reach(RestStates, End, Names, BigList, {NumSent, NumRecd});
 	true ->
 		CurState = decompressState(FirstState),
-		NewStates = transition(CurState, start),
+		NewStates = transition(CurState),
 		EndFound = stateMatch(CurState,End),
 
 		if EndFound ->
@@ -340,6 +342,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.14  2009/04/22 05:11:00  binghamb
+% Working to get preach and german to work together. Currently not reaching all the states we should be.
+%
 % Revision 1.13  2009/04/15 16:25:17  depaulfm
 % Changed interface; removed module/export definitions; Gospel code should include preach.erl and export its called functions; Requires PREACH_PATH env variable set
 %
