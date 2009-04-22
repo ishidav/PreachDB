@@ -180,9 +180,9 @@ recv_req_e(Ms = #murphi_state{}, I) ->
 send_inv(Ms = #murphi_state{}, I) ->
     if ((element(I,Ms#murphi_state.chan2) == empty) and
         (element(I,Ms#murphi_state.invSet)) and
-        ( (element(I,Ms#murphi_state.curCmd) == req_e) or
-          ( (element(I,Ms#murphi_state.curCmd) == req_s) and
-            (element(I,Ms#murphi_state.exGntd)) )))
+        ( (Ms#murphi_state.curCmd == req_e) or
+          ( (Ms#murphi_state.curCmd == req_s) and
+            (Ms#murphi_state.exGntd) )))
       -> Ms#murphi_state{
            chan2 = (setelement(I,Ms#murphi_state.chan2,inv)),
            invSet = (setelement(I,Ms#murphi_state.invSet,false))
@@ -219,7 +219,7 @@ send_inv_ack(Ms = #murphi_state{}, I) ->
 % end end;
 recv_inv_ack(Ms = #murphi_state{}, I) ->
     if ((element(I,Ms#murphi_state.chan3) == inv_ack) and
-        (element(I,Ms#murphi_state.curCmd) /= empty))
+        (Ms#murphi_state.curCmd /= empty))
       -> Ms#murphi_state{
            chan3 = (setelement(I,Ms#murphi_state.chan3,empty)),
            shrSet = (setelement(I,Ms#murphi_state.shrSet,false)),
@@ -237,10 +237,10 @@ recv_inv_ack(Ms = #murphi_state{}, I) ->
 %   CurCmd := Empty; undefine CurPtr;
 % end end;
 send_gnt_s(Ms = #murphi_state{}, I) ->
-    if ((element(I,Ms#murphi_state.curCmd) == req_s) and
-        (element(I,Ms#murphi_state.curPtr) == I)  and
+    if ((Ms#murphi_state.curCmd == req_s) and
+        (Ms#murphi_state.curPtr == I)  and
         (element(I,Ms#murphi_state.chan2) == empty) and
-        (element(I,Ms#murphi_state.exGntd) == false))
+        (Ms#murphi_state.exGntd == false))
       -> Ms#murphi_state{
            chan2 = (setelement(I,Ms#murphi_state.chan2,gnt_s)),
            shrSet = (setelement(I,Ms#murphi_state.shrSet,true)),
@@ -259,10 +259,10 @@ send_gnt_s(Ms = #murphi_state{}, I) ->
 %   ExGntd := true; CurCmd := Empty; undefine CurPtr;
 % end end;
 send_gnt_e(Ms = #murphi_state{}, I) ->
-    if ((element(I,Ms#murphi_state.curCmd) == req_e) and
-        (element(I,Ms#murphi_state.curPtr) == I)  and
+    if ((Ms#murphi_state.curCmd == req_e) and
+        (Ms#murphi_state.curPtr == I)  and
         (element(I,Ms#murphi_state.chan2) == empty) and
-        (element(I,Ms#murphi_state.exGntd) == false))
+        (Ms#murphi_state.exGntd == false))
       -> Ms#murphi_state{
            chan2 = (setelement(I,Ms#murphi_state.chan2,gnt_e)),
            shrSet = (setelement(I,Ms#murphi_state.shrSet,true)),
