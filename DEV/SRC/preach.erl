@@ -36,24 +36,24 @@ timeoutTime() -> 3000.
 
 mynode(_Index) -> brad@marmot.cs.ubc.ca.
 %mynode(Index) -> 
-%	lists:nth(1+((Index-1) rem 2), [
-%			brad@ayeaye.cs.ubc.ca,
-%			brad@avahi.cs.ubc.ca
-%			brad@marmot.cs.ubc.ca,	
-%			brad@avahi.cs.ubc.ca
+%	lists:nth(1+((Index-1) rem 4), [
+%			brad@marmot.cs.ubc.ca,
+%			brad@avahi.cs.ubc.ca,
+%			brad@ayeaye.cs.ubc.ca,	
+%			brad@okanagan.cs.ubc.ca
 %			]).
 % other machines: 
 % brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
 
 compressState(State) ->
 %	stateToInt(State).
-%	stress:stateToBits(State).
-	State.
+	stateToBits(State).
+%	State.
 
 decompressState(CompressedState) ->
 %		intToState(CompressedState).
-%		stress:bitsToState(CompressedState).
-		CompressedState.
+		bitsToState(CompressedState).
+%		CompressedState.
 
 %% end of configuration-type functions
 
@@ -151,7 +151,8 @@ initThreads(Names, 1, _Data) ->
 
 % Data is just End right now
 initThreads(Names, NumThreads, Data) ->
-	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
+	ID = spawn(mynode(NumThreads),german,startWorker,[Data]),
+%	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
 	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data),
 	ID ! {FullNames, names},
@@ -167,8 +168,9 @@ initThreads(Names, NumThreads, Data) ->
 %%     
 %%----------------------------------------------------------------------
 startWorker(End) ->
+    io:format("PID ~w: First line of startWorker~n", [self()]),
     receive
-        {Names, names} -> do_nothing % dummy RHS
+        {Names, names} -> do_nothing,     io:format("PID ~w: Got the names, at least~n", [self()]) % dummy RHS
     end,
 	reach([], End, Names,ets:new(big_list, [set,private]),{0,0}),
 	io:format("PID ~w: Worker is done~n", [self()]),
@@ -342,6 +344,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.15  2009/04/23 07:53:48  binghamb
+% Testing the German protocol.
+%
 % Revision 1.14  2009/04/22 05:11:00  binghamb
 % Working to get preach and german to work together. Currently not reaching all the states we should be.
 %
