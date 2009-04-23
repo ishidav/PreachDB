@@ -53,7 +53,9 @@ all_false() -> {false,false,false}.
 all_empty() -> {empty,empty,empty}.
 all_invalid() -> {invalid,invalid,invalid}.
 
-stateMatch(State, Pattern) -> dishwasher(State).
+stateMatch(State, Pattern) -> State == Pattern. % dishwasher(State).
+
+
 
 -record(murphi_state,
        {
@@ -69,6 +71,108 @@ stateMatch(State, Pattern) -> dishwasher(State).
 %   MemData, % : DATA;                     -- Memory data
 %   AuxData, % : DATA;                     -- Auxiliary variable for latest data
        }).
+
+
+cacheToNum(shared) -> 0;
+cacheToNum(invalid) -> 1;
+cacheToNum(exclusive) -> 2.
+
+cacheTupleToNum(CacheTuple) ->
+	1*cacheToNum(element(1, CacheTuple))+
+	4*cacheToNum(element(2, CacheTuple))+
+	16*cacheToNum(element(3, CacheTuple)).	
+
+numToCache(0) -> shared;
+numToCache(1) -> invalid;
+numToCache(2) -> exclusive.
+
+numToCacheTuple(Num) ->
+	A = (Num div 1) rem 4,
+	B = (Num div 4) rem 4,
+	C = (Num div 16) rem 4,
+	{numToCache(A),numToCache(B),numToCache(C)}.	
+
+chanToNum(empty) -> 0;
+chanToNum(req_s) -> 1;
+chanToNum(req_e) -> 2;
+chanToNum(gnt_s) -> 3;
+chanToNum(gnt_e) -> 4;
+chanToNum(inv) -> 5;
+chanToNum(inv_ack) -> 6.
+
+chanTupleToNum(ChanTuple) ->
+	1*chanToNum(element(1, ChanTuple))+
+	8*chanToNum(element(2, ChanTuple))+
+	64*chanToNum(element(3, ChanTuple)).	
+
+numToChan(0) -> empty;
+numToChan(1) -> req_s;
+numToChan(2) -> req_e;
+numToChan(3) -> gnt_s;
+numToChan(4) -> gnt_e;
+numToChan(5) -> inv;
+numToChan(6) -> inv_ack.
+
+numToChanTuple(Num) ->
+	A = (Num div 1) rem 8,
+	B = (Num div 8) rem 8,
+	C = (Num div 64) rem 8,
+	{numToChan(A),numToChan(B),numToChan(C)}.	
+
+boolToNum(false) -> 0;
+boolToNum(true) -> 1.
+
+numToBool(0) -> false;
+numToBool(1) -> true.
+
+boolTupleToNum(BoolTuple) ->
+	1*boolToNum(element(1, BoolTuple))+
+	2*boolToNum(element(2, BoolTuple))+
+	4*boolToNum(element(3, BoolTuple)).
+
+numToBoolTuple(Num) ->
+	A = (Num div 1) rem 2,
+	B = (Num div 2) rem 2,
+	C = (Num div 4) rem 2,
+	{numToBool(A),numToBool(B),numToBool(C)}.
+
+cmdToNum(Atom) -> chanToNum(Atom).
+
+numToCmd(Num) when Num =< 2 -> numToChan(Num).
+
+ptrToNum(Ptr) -> Ptr.
+
+numToPtr(Num) -> Num.
+
+stateToBits(State) ->
+	A = cacheTupleToNum(State#murphi_state.cache), % {shared, invalid, exclusive}
+	B = chanTupleToNum(State#murphi_state.chan1), % {empty, req_s, req_e, gnt_s, gnt_e, inv, inv_ack}
+	C = chanTupleToNum(State#murphi_state.chan2),
+	D = chanTupleToNum(State#murphi_state.chan3),
+	E = boolTupleToNum(State#murphi_state.invSet),
+	F = boolTupleToNum(State#murphi_state.shrSet),
+	G = boolToNum(State#murphi_state.exGntd),
+	H = cmdToNum(State#murphi_state.curCmd),  % {empty, req_s, req_e}
+	I = ptrToNum(State#murphi_state.curPtr),
+	<<A:6,B:12,C:12,D:12,E:4,F:4,G:1,H:2,I:2>>. % 55 bits
+
+bitsToState(Bits) ->
+	<<A:6,B:12,C:12,D:12,E:4,F:4,G:1,H:2,I:2>> = Bits,
+
+   #murphi_state{
+     cache = numToCacheTuple(A),
+     chan1 = numToChanTuple(B),
+     chan2 = numToChanTuple(C),
+     chan3 = numToChanTuple(D),
+     invSet = numToBoolTuple(E),
+     shrSet = numToBoolTuple(F),
+     exGntd = numToBool(G),
+     curCmd = numToCmd(H),
+     curPtr = numToPtr(I)  
+   }.
+
+
+
 
 % ruleset d : DATA do startstate "Init"
 %   for i : NODE do
