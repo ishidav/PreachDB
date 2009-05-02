@@ -47,13 +47,13 @@ mynode(_Index) -> brad@marmot.cs.ubc.ca.
 
 compressState(State) ->
 %	stateToInt(State).
-	stateToBits(State).
-%	State.
+	% stateToBits(State).
+	State.
 
 decompressState(CompressedState) ->
 %		intToState(CompressedState).
-		bitsToState(CompressedState).
-%		CompressedState.
+%		bitsToState(CompressedState).
+		CompressedState.
 
 %% end of configuration-type functions
 
@@ -69,7 +69,7 @@ rootPID(Names) -> dict:fetch(1,Names). % hd(Names).
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-start(Start,End,P) ->
+start2(Start,End,P) ->
  	T0 = now(),
 	Names = initThreads([], P,End),
 	
@@ -96,6 +96,8 @@ start(Start,End,P) ->
 	io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
 	io:format("----------~n"),
 	done.	
+
+start() -> start2(null,null,1), halt().
 
 
 waitForTerm(PIDs, _) ->
@@ -344,6 +346,10 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.16  2009/05/02 00:37:12  jbingham
+% made a few minor tweaks to make preach work with the current german2nodes.erl.
+% brad told me to check them in, so if this annoys you blame him
+%
 % Revision 1.15  2009/04/23 07:53:48  binghamb
 % Testing the German protocol.
 %
