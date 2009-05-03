@@ -14,7 +14,7 @@
 %    which appears necessary to do the generalization cleanly.  
 %
 
--export([start/3,startWorker/1]).
+-export([start/0,startWorker/1]).
 % -export([transition/1,startstate/0]).
 
 
@@ -46,14 +46,18 @@ transition(State) ->
               recv_gnt_s(State,1), recv_gnt_s(State,2),
               recv_gnt_e(State,1), recv_gnt_e(State,2)
             ],
-        [X || X <- T, X /= null].
+        T2 = [X || X <- T, X /= null],
+        %io:format("a state ~w~n",T2),
+        T2.
+        
 
 % PARAM: need N falses in this tuple
 all_false() -> {false,false}.
 all_empty() -> {empty,empty}.
 all_invalid() -> {invalid,invalid}.
 
-stateMatch(State, Pattern) -> dishwasher(State).
+%stateMatch(State, Pattern) -> dishwasher(State).
+stateMatch(State, Pattern) -> false.
 
 -record(murphi_state,
        {
@@ -146,7 +150,7 @@ recv_req_s(Ms = #murphi_state{}, I) ->
            curCmd = req_s,
            curPtr = I,
            chan1 = (setelement(I,Ms#murphi_state.chan1,empty)),
-           invSet = all_false()
+           invSet = Ms#murphi_state.shrSet
          };
     true 
       -> null
@@ -262,7 +266,13 @@ send_gnt_e(Ms = #murphi_state{}, I) ->
     if ((Ms#murphi_state.curCmd == req_e) and
         (Ms#murphi_state.curPtr == I)  and
         (element(I,Ms#murphi_state.chan2) == empty) and
-        (Ms#murphi_state.exGntd == false))
+        (Ms#murphi_state.exGntd == false) and
+% JESSE says: this line was missing, causing erlang to find more states than murphi
+% and erlang doesn't like this call:
+        % (Ms#murphi_state.shrSet == all_false() ))
+        (element(1,Ms#murphi_state.shrSet) == false) and
+        (element(2,Ms#murphi_state.shrSet) == false) 
+       )
       -> Ms#murphi_state{
            chan2 = (setelement(I,Ms#murphi_state.chan2,gnt_e)),
            shrSet = (setelement(I,Ms#murphi_state.shrSet,true)),
