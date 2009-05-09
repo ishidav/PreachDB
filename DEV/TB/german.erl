@@ -13,9 +13,10 @@
 %    although i'm not sure how to create an n-tuple literal where n is a variable,
 %    which appears necessary to do the generalization cleanly.  
 %
+-define(N,2).
 
--export([start/3,startWorker/1]).
-% -export([transition/1,startstate/0]).
+-export([start/0,startWorker/1]).
+%-export([transition/1,startstate/0]).
 
 
 %%----------------------------------------------------------------------
@@ -29,33 +30,45 @@
 
 
 %
+%  probably a cleaner way to do these...
+%
+mtuple(El,M) -> 
+    if (M > 0) -> [El | mtuple(El,M-1)];
+    true -> []
+    end.
+ntuple(El) -> mtuple(El,?N).
+upto(I) ->
+    if (I < ?N) -> [I | upto(I+1) ];
+    true -> [?N]
+    end.
+
+%
 %  create the list formed by applying all rules to State, but then
 %  filter out all null results (a la Flavio), which are those rules
 %  for which the guard doesn't hold
 %
 transition(State) ->
-        T = [ send_req_s(State,1), send_req_s(State,2), send_req_s(State,3),
-              send_req_e(State,1), send_req_e(State,2), send_req_e(State,3),
-              recv_req_s(State,1), recv_req_s(State,2), recv_req_s(State,3),
-              recv_req_e(State,1), recv_req_e(State,2), recv_req_e(State,3),
-              send_inv(State,1), send_inv(State,2), send_inv(State,3),
-              send_inv_ack(State,1), send_inv_ack(State,2), send_inv_ack(State,3),
-              recv_inv_ack(State,1), recv_inv_ack(State,2), recv_inv_ack(State,3),
-              send_gnt_s(State,1), send_gnt_s(State,2), send_gnt_s(State,3),
-              send_gnt_e(State,1), send_gnt_e(State,2), send_gnt_e(State,3),
-              recv_gnt_s(State,1), recv_gnt_s(State,2), recv_gnt_s(State,3),
-              recv_gnt_e(State,1), recv_gnt_e(State,2), recv_gnt_e(State,3)
-            ],
+        io:format("blah world~w~n",[ ntuple(invalid)]),
+        T = lists:flatmap(
+               fun(I) -> 
+               [ send_req_s(State,I),
+                 send_req_e(State,I),
+                 recv_req_s(State,I),
+                 recv_req_e(State,I),
+                 send_inv(State,I),
+                 send_inv_ack(State,I),
+                 recv_inv_ack(State,I),
+                 send_gnt_s(State,I),
+                 send_gnt_e(State,I),
+                 recv_gnt_s(State,I),
+                 recv_gnt_e(State,I)
+               ] end,
+               upto(1)),
         [X || X <- T, X /= null].
+        
 
-% PARAM: need N falses in this tuple
-all_false() -> {false,false,false}.
-all_empty() -> {empty,empty,empty}.
-all_invalid() -> {invalid,invalid,invalid}.
-
-stateMatch(State, Pattern) -> State == Pattern. % dishwasher(State).
-
-
+%stateMatch(State, Pattern) -> dishwasher(State).
+stateMatch(_, _) -> false.
 
 -record(murphi_state,
        {
@@ -72,108 +85,6 @@ stateMatch(State, Pattern) -> State == Pattern. % dishwasher(State).
 %   AuxData, % : DATA;                     -- Auxiliary variable for latest data
        }).
 
-
-cacheToNum(shared) -> 0;
-cacheToNum(invalid) -> 1;
-cacheToNum(exclusive) -> 2.
-
-cacheTupleToNum(CacheTuple) ->
-	1*cacheToNum(element(1, CacheTuple))+
-	4*cacheToNum(element(2, CacheTuple))+
-	16*cacheToNum(element(3, CacheTuple)).	
-
-numToCache(0) -> shared;
-numToCache(1) -> invalid;
-numToCache(2) -> exclusive.
-
-numToCacheTuple(Num) ->
-	A = (Num div 1) rem 4,
-	B = (Num div 4) rem 4,
-	C = (Num div 16) rem 4,
-	{numToCache(A),numToCache(B),numToCache(C)}.	
-
-chanToNum(empty) -> 0;
-chanToNum(req_s) -> 1;
-chanToNum(req_e) -> 2;
-chanToNum(gnt_s) -> 3;
-chanToNum(gnt_e) -> 4;
-chanToNum(inv) -> 5;
-chanToNum(inv_ack) -> 6.
-
-chanTupleToNum(ChanTuple) ->
-	1*chanToNum(element(1, ChanTuple))+
-	8*chanToNum(element(2, ChanTuple))+
-	64*chanToNum(element(3, ChanTuple)).	
-
-numToChan(0) -> empty;
-numToChan(1) -> req_s;
-numToChan(2) -> req_e;
-numToChan(3) -> gnt_s;
-numToChan(4) -> gnt_e;
-numToChan(5) -> inv;
-numToChan(6) -> inv_ack.
-
-numToChanTuple(Num) ->
-	A = (Num div 1) rem 8,
-	B = (Num div 8) rem 8,
-	C = (Num div 64) rem 8,
-	{numToChan(A),numToChan(B),numToChan(C)}.	
-
-boolToNum(false) -> 0;
-boolToNum(true) -> 1.
-
-numToBool(0) -> false;
-numToBool(1) -> true.
-
-boolTupleToNum(BoolTuple) ->
-	1*boolToNum(element(1, BoolTuple))+
-	2*boolToNum(element(2, BoolTuple))+
-	4*boolToNum(element(3, BoolTuple)).
-
-numToBoolTuple(Num) ->
-	A = (Num div 1) rem 2,
-	B = (Num div 2) rem 2,
-	C = (Num div 4) rem 2,
-	{numToBool(A),numToBool(B),numToBool(C)}.
-
-cmdToNum(Atom) -> chanToNum(Atom).
-
-numToCmd(Num) when Num =< 2 -> numToChan(Num).
-
-ptrToNum(Ptr) -> Ptr.
-
-numToPtr(Num) -> Num.
-
-stateToBits(State) ->
-	A = cacheTupleToNum(State#murphi_state.cache), % {shared, invalid, exclusive}
-	B = chanTupleToNum(State#murphi_state.chan1), % {empty, req_s, req_e, gnt_s, gnt_e, inv, inv_ack}
-	C = chanTupleToNum(State#murphi_state.chan2),
-	D = chanTupleToNum(State#murphi_state.chan3),
-	E = boolTupleToNum(State#murphi_state.invSet),
-	F = boolTupleToNum(State#murphi_state.shrSet),
-	G = boolToNum(State#murphi_state.exGntd),
-	H = cmdToNum(State#murphi_state.curCmd),  % {empty, req_s, req_e}
-	I = ptrToNum(State#murphi_state.curPtr),
-	<<A:6,B:12,C:12,D:12,E:4,F:4,G:1,H:2,I:2>>. % 55 bits
-
-bitsToState(Bits) ->
-	<<A:6,B:12,C:12,D:12,E:4,F:4,G:1,H:2,I:2>> = Bits,
-
-   #murphi_state{
-     cache = numToCacheTuple(A),
-     chan1 = numToChanTuple(B),
-     chan2 = numToChanTuple(C),
-     chan3 = numToChanTuple(D),
-     invSet = numToBoolTuple(E),
-     shrSet = numToBoolTuple(F),
-     exGntd = numToBool(G),
-     curCmd = numToCmd(H),
-     curPtr = numToPtr(I)  
-   }.
-
-
-
-
 % ruleset d : DATA do startstate "Init"
 %   for i : NODE do
 %     Chan1[i].Cmd := Empty; Chan2[i].Cmd := Empty; Chan3[i].Cmd := Empty;
@@ -183,24 +94,24 @@ bitsToState(Bits) ->
 % end end;
 startstate() ->
    #murphi_state{
-     cache = all_invalid(),
-     chan1 = all_empty(),
-     chan2 = all_empty(),
-     chan3 = all_empty(),
-     invSet = all_false(),
-     shrSet = all_false(),
+     cache = ntuple(invalid),
+     chan1 = ntuple(empty),
+     chan2 = ntuple(empty),
+     chan3 = ntuple(empty),
+     invSet = ntuple(false),
+     shrSet = ntuple(false),
      exGntd = false,
      curCmd = empty,
      curPtr = 0  % 0 means undefined
    }.
 
 
-   dishwasher(Ms = #murphi_state{}) ->
-		Ms#murphi_state.curCmd == req_s.
+%dishwasher(Ms = #murphi_state{}) ->
+%  Ms#murphi_state.curCmd == req_s.
 
-    firstTrans(Ms = #murphi_state{}) ->
- (element(1,Ms#murphi_state.chan1) == req_s) or
-(element(1,Ms#murphi_state.chan1) == req_e).
+%firstTrans(Ms = #murphi_state{}) ->
+%  (element(1,Ms#murphi_state.chan1) == req_s) or
+%  (element(1,Ms#murphi_state.chan1) == req_e).
 
 % ruleset i : NODE; d : DATA do rule "Store"
 %   Cache[i].State = E
@@ -250,7 +161,7 @@ recv_req_s(Ms = #murphi_state{}, I) ->
            curCmd = req_s,
            curPtr = I,
            chan1 = (setelement(I,Ms#murphi_state.chan1,empty)),
-           invSet = all_false()
+           invSet = Ms#murphi_state.shrSet
          };
     true 
       -> null
@@ -366,7 +277,13 @@ send_gnt_e(Ms = #murphi_state{}, I) ->
     if ((Ms#murphi_state.curCmd == req_e) and
         (Ms#murphi_state.curPtr == I)  and
         (element(I,Ms#murphi_state.chan2) == empty) and
-        (Ms#murphi_state.exGntd == false))
+        (Ms#murphi_state.exGntd == false) and
+% JESSE says: this line was missing, causing erlang to find more states than murphi
+% and erlang doesn't like this call:
+        % (Ms#murphi_state.shrSet == all_false() ))
+        (element(1,Ms#murphi_state.shrSet) == false) and
+        (element(2,Ms#murphi_state.shrSet) == false) 
+       )
       -> Ms#murphi_state{
            chan2 = (setelement(I,Ms#murphi_state.chan2,gnt_e)),
            shrSet = (setelement(I,Ms#murphi_state.shrSet,true)),
