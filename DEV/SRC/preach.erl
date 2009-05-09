@@ -212,6 +212,8 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
 		end,
 		sendStates(NewStates, Names),
 		NewNumSent = NumSent + length(NewStates),
+   
+        % io:format("a state ~w~n",[FirstState]),
 		ets:insert(BigList, {FirstState}),
 		reach(RestStates, End, Names, BigList, {NewNumSent, NumRecd}) % grow the big list
 %		reach(RestStates, End, Names, dict:append(FirstState, true, BigList), {NewNumSent, NumRecd}) % grow the big list
@@ -346,6 +348,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.17  2009/05/09 01:53:12  jbingham
+% sneding to brad
+%
 % Revision 1.16  2009/05/02 00:37:12  jbingham
 % made a few minor tweaks to make preach work with the current german2nodes.erl.
 % brad told me to check them in, so if this annoys you blame him
