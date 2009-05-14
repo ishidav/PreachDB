@@ -34,14 +34,14 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
-mynode(_Index) -> brad@marmot.cs.ubc.ca.
-%mynode(Index) -> 
-%	lists:nth(1+((Index-1) rem 4), [
-%			brad@marmot.cs.ubc.ca,
-%			brad@avahi.cs.ubc.ca,
+%mynode(_Index) -> brad@marmot.cs.ubc.ca.
+mynode(Index) -> 
+	lists:nth(1+((Index-1) rem 2), [
+			brad@marmot.cs.ubc.ca,
+			brad@avahi.cs.ubc.ca
 %			brad@ayeaye.cs.ubc.ca,	
 %			brad@okanagan.cs.ubc.ca
-%			]).
+			]).
 % other machines: 
 % brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
 
@@ -69,17 +69,17 @@ rootPID(Names) -> dict:fetch(1,Names). % hd(Names).
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-start2(Start,End,P) ->
+start(Start,End,P) ->
  	T0 = now(),
 	Names = initThreads([], P,End),
-	
+
 	% ignoring Start parameter
 	%sendStates(Start, Names),
 	sendStates([startstate()],Names),
 	NumSent = length([startstate()]),
 	TableID = ets:new(big_list, [set, private]),
 
-	reach([], End, Names,TableID,{NumSent,0}),
+	reach([], End, Names,TableID,{NumSent,0},[]),
 	ets:delete(TableID),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
@@ -97,7 +97,7 @@ start2(Start,End,P) ->
 	io:format("----------~n"),
 	done.	
 
-start() -> start2(null,null,1), halt().
+start() -> start(null,null,1), halt().
 
 
 waitForTerm(PIDs, _) ->
@@ -153,7 +153,8 @@ initThreads(Names, 1, _Data) ->
 
 % Data is just End right now
 initThreads(Names, NumThreads, Data) ->
-	ID = spawn(mynode(NumThreads),german,startWorker,[Data]),
+	ID = spawn(mynode(NumThreads),test,startWorker,[Data]),
+%	ID = spawn(mynode(NumThreads),german,startWorker,[Data]),
 %	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
 	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data),
@@ -170,11 +171,10 @@ initThreads(Names, NumThreads, Data) ->
 %%     
 %%----------------------------------------------------------------------
 startWorker(End) ->
-    io:format("PID ~w: First line of startWorker~n", [self()]),
     receive
-        {Names, names} -> do_nothing,     io:format("PID ~w: Got the names, at least~n", [self()]) % dummy RHS
+        {Names, names} -> do_nothing % dummy RHS
     end,
-	reach([], End, Names,ets:new(big_list, [set,private]),{0,0}),
+	reach([], End, Names,ets:new(big_list, [set,private]),{0,0},[]),
 	io:format("PID ~w: Worker is done~n", [self()]),
 	ok.
 
@@ -196,13 +196,14 @@ startWorker(End) ->
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
+reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendList) ->
 	IsOldState = ets:member(BigList, FirstState), %dict:is_key(FirstState, BigList),
 	if IsOldState ->
-		reach(RestStates, End, Names, BigList, {NumSent, NumRecd});
+		reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList);
 	true ->
 		CurState = decompressState(FirstState),
 		NewStates = transition(CurState),
+	%	io:format("NewStates size is ~w~n", [length(NewStates)]),
 		EndFound = stateMatch(CurState,End),
 
 		if EndFound ->
@@ -210,17 +211,18 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}) ->
 			rootPID(Names) ! end_found;
 		   true -> do_nothing
 		end,
-		sendStates(NewStates, Names),
+	%	sendStates(NewStates, Names),
 		NewNumSent = NumSent + length(NewStates),
    
         % io:format("a state ~w~n",[FirstState]),
 		ets:insert(BigList, {FirstState}),
-		reach(RestStates, End, Names, BigList, {NewNumSent, NumRecd}) % grow the big list
+		reach(RestStates, End, Names, BigList, {NewNumSent, NumRecd}, NewStates ++ SendList) % grow the big list
 %		reach(RestStates, End, Names, dict:append(FirstState, true, BigList), {NewNumSent, NumRecd}) % grow the big list
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, BigList, {NumSent, NumRecd}) ->
+reach([], End, Names, BigList, {NumSent, NumRecd}, SendList) ->
+	sendStates(SendList, Names),
 	TableSize = element(2,lists:nth(4,ets:info(BigList))),
 	Ret = checkMessageQ(timeout, TableSize, Names, {NumSent, NumRecd}, 0, []),
 	if Ret == done ->
@@ -230,7 +232,7 @@ reach([], End, Names, BigList, {NumSent, NumRecd}) ->
 
 		%reach(lists:usort(lists:filter(fun(X) -> ets:member(BigList,X)==false end, NewQ)),End, Names, BigList, {NumSent, NewNumRecd}) 
 		%reach([X || X <- NewQ, ets:member(BigList,X) == false], End, Names, BigList, {NumSent, NewNumRecd}) 
-		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd})
+		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd}, [])
 	end.
 
 
@@ -348,6 +350,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.18  2009/05/14 23:14:17  binghamb
+% Changed the way we send states. Now using John's idea of sending all generated states at once after the state-queue has been consumed, rather than interleaving the consumption of a state and the sending of it's sucessors. Improve performance on a couple small tests.
+%
 % Revision 1.17  2009/05/09 01:53:12  jbingham
 % sneding to brad
 %
