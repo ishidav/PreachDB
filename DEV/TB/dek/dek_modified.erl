@@ -1,3 +1,39 @@
+% $Id: dek_modified.erl,v 1.2 2009/05/20 17:34:32 depaulfm Exp $
+%------------------------------------------------------------------------------
+%  LICENSE AGREEMENT
+% 
+%  FileName                   [dek_modified.erl]
+% 
+%  PackageName                [preach]
+% 
+%  Synopsis                   [This is a semi-automatic translation of         ]%                             [ dek_modified.m                                 ]
+% 
+%  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+% 
+%  Copyright                  [Copyright (C) 2009 University of British Columbia]
+% 
+%  This program is free software; you can redistribute it and/or modify
+% it under the terms of the GNU General Public License as published by
+% the Free Software Foundation; either version 2 of the License, or
+% (at your option) any later version.
+% 
+% This program is distributed in the hope that it will be useful,
+% but WITHOUT ANY WARRANTY; without even the implied warranty of
+% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+% GNU General Public License for more details.
+% 
+% You should have received a copy of the GNU General Public License
+% along with this program; if not, write to the Free Software
+% Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+%-------------------------------------------------------------------------------
+
+% IMPORTANT : (temporary arrangement)
+% Requires preach.erl to have the following 
+%
+%	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
+% replaced with-->
+%	ID = spawn(mynode(NumThreads),test,startWorker,[Data]),
+%
 %---------------Manually added-------------------%
 
 -module(test).
@@ -38,16 +74,12 @@ transition(State) ->
 }).
 %======================RuleBase0=====================
 rule0(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_exitCrit) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_exitCrit) ->
 	    
 	    State#state{mu_c = ((State#state.mu_c)#mu_c{
 				  c = setelement(Field,(State#state.mu_c)#mu_c.c,mu_unlocked)}),%},
-%	    X = (Field rem 2)+1, io:format("Field=~w X=~w~n",[Field,X]),
-	    %State#state{
 	      mu_turn = ((State#state.mu_turn)#mu_turn{
 				     turn = setelement(1,(State#state.mu_turn)#mu_turn.turn,(Field rem 2)+1)}),%}, % s/mu_p/Field/; it was 1 - Field
-%	    io:format("Field=~w X=~w  turn=~w~n",[Field,X,element(1,(State#state.mu_turn)#mu_turn.turn)]),
-	    %State#state{
 	      mu_s = ((State#state.mu_s)#mu_s{
 				  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_init)})};
        
@@ -55,7 +87,7 @@ rule0(State = #state{}, Field) ->
     end.
 %======================RuleBase1=====================
 rule1(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_crit) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_crit) ->
 
 	    State#state{mu_s = ((State#state.mu_s)#mu_s{
 				  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_exitCrit)})};
@@ -64,11 +96,10 @@ rule1(State = #state{}, Field) ->
     end.
 %======================RuleBase2=====================
 rule2(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_lockAndRetry) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_lockAndRetry) ->
 	    
 	    State#state{mu_c = ((State#state.mu_c)#mu_c{
 				  c = setelement(Field,(State#state.mu_c)#mu_c.c,mu_locked)}),%},
-	    %State#state{
 	      mu_s = ((State#state.mu_s)#mu_s{
 				  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_whileOtherLocked)})};
        
@@ -76,9 +107,9 @@ rule2(State = #state{}, Field) ->
     end.
 %======================RuleBase3=====================
 rule3(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_waitForTurn) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_waitForTurn) ->
 	    
-	    if ( (element(1,(State#state.mu_turn)#mu_turn.turn) /= Field) ) ->% s/mu_p/Field/
+	    if ( (element(1,(State#state.mu_turn)#mu_turn.turn) /= Field) ) ->
 		    State#state{mu_s = ((State#state.mu_s)#mu_s{
 					  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_lockAndRetry)})};
 	       true -> null
@@ -89,11 +120,11 @@ rule3(State = #state{}, Field) ->
     end.
 %======================RuleBase4=====================
 rule4(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_unlock) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_unlock) ->
 
 	    State#state{mu_c = ((State#state.mu_c)#mu_c{
 				  c = setelement(Field,(State#state.mu_c)#mu_c.c,mu_unlocked)}),%},
-	    %State#state{
+
 	      mu_s = ((State#state.mu_s)#mu_s{
 				  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_waitForTurn)})};
        
@@ -101,9 +132,9 @@ rule4(State = #state{}, Field) ->
     end.
 %======================RuleBase5=====================
 rule5(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_checkTurn) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_checkTurn) ->
 	    
-	    if ( (element(1,(State#state.mu_turn)#mu_turn.turn) == ((Field rem 2)+1)) ) ->% s/mu_p/Field/; it was 1 - Field
+	    if ( (element(1,(State#state.mu_turn)#mu_turn.turn) == ((Field rem 2)+1)) ) ->
 		    State#state{mu_s = ((State#state.mu_s)#mu_s{
 					  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_unlock)})};
 	       
@@ -117,9 +148,9 @@ rule5(State = #state{}, Field) ->
     end.
 %======================RuleBase6=====================
 rule6(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_whileOtherLocked) ->% s/mu_p/Field/
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_whileOtherLocked) ->
 
-	    if ( (element(((Field rem 2)+1),(State#state.mu_c)#mu_c.c) == mu_unlocked) ) ->% s/mu_p/Field/; it was 1 - Field
+	    if ( (element(((Field rem 2)+1),(State#state.mu_c)#mu_c.c) == mu_unlocked) ) ->
 		    State#state{mu_s = ((State#state.mu_s)#mu_s{
 					  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_crit)})};
 	       
@@ -134,11 +165,11 @@ rule6(State = #state{}, Field) ->
 
  %======================RuleBase7=====================
 rule7(State = #state{}, Field) ->
-    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_init) ->% s/mu_p/Field/
-	    %io:format("RuleBase7: Field = ~w, State = ~w~n",[Field,State]),
+    if (element(Field,(State#state.mu_s)#mu_s.s) == mu_init) ->
+
 	    State#state{mu_c = ((State#state.mu_c)#mu_c{
 				  c = setelement(Field,(State#state.mu_c)#mu_c.c,mu_locked)}),%},
-	    %State#state{
+
 	      mu_s = ((State#state.mu_s)#mu_s{
 				  s = setelement(Field,(State#state.mu_s)#mu_s.s,mu_whileOtherLocked)})};
        true -> null

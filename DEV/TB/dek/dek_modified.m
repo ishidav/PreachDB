@@ -1,3 +1,34 @@
+--$Id: dek_modified.m,v 1.2 2009/05/20 17:34:32 depaulfm Exp $
+--------------------------------------------------------------------------------
+-- LICENSE AGREEMENT
+--
+-- FileName                   [dek_modified.m]
+--
+-- PackageName                [preach]
+--
+-- Synopsis                   [This is a modified version of dek.m             ]
+--                            [It replaces procedure and for loops w/ inline   ]
+--                            [constructs. It comments out invariant           ]
+--
+-- Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+--
+-- Copyright                  [Copyright (C) 2009 University of British Columbia]
+--
+-- This program is free software; you can redistribute it and/or modify
+--it under the terms of the GNU General Public License as published by
+--the Free Software Foundation; either version 2 of the License, or
+--(at your option) any later version.
+--
+--This program is distributed in the hope that it will be useful,
+--but WITHOUT ANY WARRANTY; without even the implied warranty of
+--MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+--GNU General Public License for more details.
+--
+--You should have received a copy of the GNU General Public License
+--along with this program; if not, write to the Free Software
+--Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+---------------------------------------------------------------------------------
+
 ------------------------------------------------------------------------
 -- Copyright (C) 1992, 1993 by the Board of Trustees of 		 
 -- Leland Stanford Junior University.					 
@@ -40,11 +71,6 @@ Var
 	turn :	0..1;
 
 
---Procedure Goto(  p : ind_t;  label : label_t );
---Begin
---	s[ p ] := label;
---End;
-
 Ruleset p : ind_t Do
 
 	Rule "Init"
@@ -52,7 +78,6 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		c[p] := locked;
---		Goto( p, whileOtherLocked );
 	        s[ p ] := whileOtherLocked;
 	End;
 
@@ -61,10 +86,8 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		If c[1-p] = unlocked Then
---			Goto( p, crit );
                         s[ p ] := crit;
 		Else
---			Goto( p, checkTurn );
                         s[ p ] := checkTurn;
 		End;
 	End;
@@ -74,10 +97,8 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		If turn = 1-p Then
---			Goto( p, unlock );
                         s[ p ] := unlock; 
 		Else
---			Goto( p, whileOtherLocked );
                         s[ p ] := whileOtherLocked;
 		End;
 	End;
@@ -87,7 +108,6 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		c[p]:=unlocked;
---		Goto( p, waitForTurn );
                 s[ p ] := waitForTurn;
 	End;
 
@@ -96,7 +116,6 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		If turn != p Then
---			Goto( p, lockAndRetry );
                          s[ p ] := lockAndRetry;
 		End;
 	End;
@@ -106,7 +125,6 @@ Ruleset p : ind_t Do
 	==>
 	Begin
 		c[p] := locked;
---		Goto( p, whileOtherLocked );
                 s[ p ] := whileOtherLocked;
 	End;
 
@@ -114,7 +132,6 @@ Ruleset p : ind_t Do
 		s[p] = crit
 	==>
 	Begin
---		Goto( p, exitCrit );
                  s[ p ] := exitCrit;
 	End;
 
@@ -124,7 +141,6 @@ Ruleset p : ind_t Do
 	Begin
 		c[p] := unlocked;
 		turn := 1-p;
---		Goto( p, init );
                 s[ p ] := init;
 	End;
 
@@ -134,13 +150,10 @@ End;
 
 Startstate
   Begin
---	For p : ind_t Do
---		Goto( p, init );
-                 s[ 0 ] := init; 
-                 s[ 1 ] := init; 
-		c[ 0 ] := unlocked;
-		c[ 1 ] := unlocked;
---	End;
+        s[ 0 ] := init; 
+        s[ 1 ] := init; 
+	c[ 0 ] := unlocked;
+	c[ 1 ] := unlocked;
 	turn := 0;
 End;
 
