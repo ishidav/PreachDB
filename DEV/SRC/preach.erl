@@ -34,16 +34,78 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
-%mynode(_Index) -> brad@marmot.cs.ubc.ca.
-mynode(Index) -> 
-	lists:nth(1+((Index-1) rem 2), [
-			brad@marmot.cs.ubc.ca,
-			brad@avahi.cs.ubc.ca
-%			brad@ayeaye.cs.ubc.ca,	
-%			brad@okanagan.cs.ubc.ca
-			]).
-% other machines: 
-% brad@fossa.cs.ubc.ca, brad@indri.cs.ubc.ca
+%%----------------------------------------------------------------------
+%% Function: mynode/3
+%% Purpose : Enumerate list of hosts where erlang workers are waiting for 
+%%           jobs 	
+%% Args    : Index is the number of workers to be used. Important Index zero
+%%          must be the master from which you're spawning the jobs   
+%%           HostList is the list of hosts
+%%           Nhosts is the number of hosts
+%%
+%% Requires: a symlink to $PREACH/VER/TB,ie, ln -s $PREACH/VER/TB hosts	
+%%           from the directory you're running erl
+%% 
+%% Returns : list of hosts
+%%     
+%%----------------------------------------------------------------------
+mynode(Index, HostList, Nhosts) -> 
+       %list_to_atom(lists:append("pruser@",
+       list_to_atom(lists:append( 
+                          lists:append(
+                                lists:append("pruser", integer_to_list(Index)), "@"),
+                          atom_to_list(lists:nth(1+((Index-1) rem Nhosts), HostList)))).
+
+
+%%----------------------------------------------------------------------
+%% Function: read_inFile/3 
+%% Purpose : Reads the erlang tokenized file 'hosts'. The syntax follows: 
+%%           one machine-name per line followed by a dot 
+%%
+%% Args    : inFile   is the file handler for 'hosts'; 
+%%           HostList -> emtpy list;
+%%           SLine    -> start line (trick used to get number of hosts)
+%%
+%% Returns : a tuple w the list of hosts and the number of elems in the list
+%%     
+%%----------------------------------------------------------------------
+read_inFile(InFile,HostList,SLine) ->
+    case io:read(InFile, "", SLine) of
+        {ok, Host, ELine} ->
+            read_inFile(InFile, lists:append(HostList, [Host]), SLine + 1);
+
+        {eof, ELine} ->
+             {HostList, ELine-1};
+
+        {error, ErrInfo, Err} ->
+            io:format("Error in reading file ~w with status",[InFile]),
+            io:format(" ~w; ~w ...exiting~n",[ErrInfo, Err]);
+        Other -> Other
+
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: slaves/2 
+%% Purpose : Iterates over hosts and starts them as slaves (erlang terminology). 
+%%           
+%%
+%% Args    : Hosts is the list of hosts 
+%%           CWD is the current directory of the master node 
+%%           NHosts is the number of hosts 
+%%
+%% Returns : 
+%%     
+%%----------------------------------------------------------------------
+slaves([], _CWD, _NHosts) ->
+ok;
+slaves([Host|Hosts], CWD, NHosts) ->
+  Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
+         " -pa " ++ CWD ++ "  -smp enable",
+  NodeName = string:concat("pruser", integer_to_list(NHosts)),
+  {ok, Node} = slave:start_link(Host, NodeName, Args),
+  io:format("Erlang node started = [~p]~n", [Node]),
+  slaves(Hosts, CWD, NHosts - 1).
+
 
 compressState(State) ->
 %	stateToInt(State).
@@ -57,7 +119,7 @@ decompressState(CompressedState) ->
 
 %% end of configuration-type functions
 
-rootPID(Names) -> dict:fetch(1,Names). % hd(Names).
+rootPID(Names) -> dict:fetch(1,Names). % hd(Names).  
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -71,7 +133,25 @@ rootPID(Names) -> dict:fetch(1,Names). % hd(Names).
 %%----------------------------------------------------------------------
 start(Start,End,P) ->
  	T0 = now(),
-	Names = initThreads([], P,End),
+        case file:open("hosts",[read]) of
+             {ok, InFile} ->
+                 {HostList, Nhosts} = read_inFile(InFile,[], 1);
+             {error, Reason} ->
+                    io:format("Could not open 'hosts'. Erlang reason: '~w'. ",[Reason]),
+                    io:format("Read www/erlang.doc/man/io.html for more info...exiting~n",[]),
+                 {HostList, Nhosts} = {null,null},
+                    exit;
+             Other -> io:format("Error in parsing return value of file:open...exiting~n",[]),
+                 {HostList, Nhosts} = {null,null},
+                    exit
+        end,
+        {Status, CWD} = file:get_cwd(),
+        if Status == error ->
+               io:format("Could not read current directory. Erlang reason: '~w'. ",[CWD]);   
+           true -> ok
+        end,
+        slaves(tl(HostList), CWD, Nhosts),
+	Names = initThreads([], P,End,HostList,Nhosts),
 
 	% ignoring Start parameter
 	%sendStates(Start, Names),
@@ -137,27 +217,29 @@ sendStates([First | Rest], Names) ->
 
 
 %%----------------------------------------------------------------------
-%% Function: initThreads/3
+%% Function: initThreads/5
 %% Purpose : Spawns worker threads. Passes the command-line input to each thread.
 %%		Sends the list of all PIDs to each thread once they've all been spawned.
 %% Args    : Names is a list of PIDs of threads spawned so far.
-%%		NumThreads is the number of threads left to spawn.
-%%		Data is the command-line input.
+%%	     NumThreads is the number of threads left to spawn.
+%%	     Data is the command-line input.
+%%           HostList is the list of hosts read from file 'hosts'
+%%           NHost is the number of hosts 
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-initThreads(Names, 1, _Data) ->	
+initThreads(Names, 1, _Data, _HostList, _NHost) ->	
 	NamesList = [self() | Names],
 	NamesDict = dict:from_list(lists:zip(lists:seq(1,length(NamesList)), NamesList)),
 	NamesDict;
 
 % Data is just End right now
-initThreads(Names, NumThreads, Data) ->
-	ID = spawn(mynode(NumThreads),test,startWorker,[Data]),
+initThreads(Names, NumThreads, Data, HostList, NHost) ->
+	ID = spawn(mynode(NumThreads, HostList, NHost),test,startWorker,[Data]),
 %	ID = spawn(mynode(NumThreads),german,startWorker,[Data]),
 %	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
-	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads), ID]),
-	FullNames = initThreads([ID | Names], NumThreads-1, Data),
+	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads, HostList, NHost), ID]),
+	FullNames = initThreads([ID | Names], NumThreads-1, Data, HostList, NHost),
 	ID ! {FullNames, names},
 	FullNames. % send each worker the PID list
 
@@ -350,6 +432,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.19  2009/05/25 01:47:05  depaulfm
+% Generalized mynode; Modified start to read a file containing a list of hosts; Added slaves which starts each node; Modified initThreads to take into account the generalized mynode. It requires a file called host in the directory from which you launch erl. Erlang should be launched w/ the following erl -sname pruser1 -rsh ssh
+%
 % Revision 1.18  2009/05/14 23:14:17  binghamb
 % Changed the way we send states. Now using John's idea of sending all generated states at once after the state-queue has been consumed, rather than interleaving the consumption of a state and the sending of it's sucessors. Improve performance on a couple small tests.
 %
