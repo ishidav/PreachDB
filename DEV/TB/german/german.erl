@@ -36,7 +36,7 @@ mtuple(El,M) ->
     if (M > 0) -> [El | mtuple(El,M-1)];
     true -> []
     end.
-ntuple(El) -> mtuple(El,?N).
+ntuple(El) -> list_to_tuple(mtuple(El,?N)).
 upto(I) ->
     if (I < ?N) -> [I | upto(I+1) ];
     true -> [?N]
