@@ -150,17 +150,16 @@ start(Start,End,P) ->
                io:format("Could not read current directory. Erlang reason: '~w'. ",[CWD]);   
            true -> ok
         end,
-        slaves(tl(HostList), CWD, Nhosts),
+        slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
 	Names = initThreads([], P,End,HostList,Nhosts),
 
 	% ignoring Start parameter
 	%sendStates(Start, Names),
 	sendStates([startstate()],Names),
 	NumSent = length([startstate()]),
-	TableID = ets:new(big_list, [set, private]),
-
-	reach([], End, Names,TableID,{NumSent,0},[]),
-	ets:delete(TableID),
+         %ESBF = bloom:sbf(26700000,0.000001), %ESBF = erlang scalabable bloom filter
+         ESBF = bloom:bloom(576551,0.00001), %ESBF = erlang scalabable bloom filter
+	reach([], End, Names,ESBF,{NumSent,0},[], 0),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
 	NumStates = waitForTerm(dictToList(Names), 0),
@@ -256,7 +255,8 @@ startWorker(End) ->
     receive
         {Names, names} -> do_nothing % dummy RHS
     end,
-	reach([], End, Names,ets:new(big_list, [set,private]),{0,0},[]),
+	%reach([], End, Names,bloom:sbf(26700000,0.000001),{0,0},[],0),
+	reach([], End, Names,bloom:bloom(576551,0.00001),{0,0},[],0),
 	io:format("PID ~w: Worker is done~n", [self()]),
 	ok.
 
@@ -278,11 +278,11 @@ startWorker(End) ->
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendList) ->
-	IsOldState = ets:member(BigList, FirstState), %dict:is_key(FirstState, BigList),
-	if IsOldState ->
-		reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList);
+reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
+	case bloom:member(FirstState,BigList) of %dict:is_key(FirstState, BigList),
 	true ->
+		reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList, Count);
+	false ->
 		CurState = decompressState(FirstState),
 		NewStates = transition(CurState),
 	%	io:format("NewStates size is ~w~n", [length(NewStates)]),
@@ -297,24 +297,19 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 		NewNumSent = NumSent + length(NewStates),
    
         % io:format("a state ~w~n",[FirstState]),
-		ets:insert(BigList, {FirstState}),
-		reach(RestStates, End, Names, BigList, {NewNumSent, NumRecd}, NewStates ++ SendList) % grow the big list
-%		reach(RestStates, End, Names, dict:append(FirstState, true, BigList), {NewNumSent, NumRecd}) % grow the big list
+		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NewNumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, BigList, {NumSent, NumRecd}, SendList) ->
+reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
 	sendStates(SendList, Names),
-	TableSize = element(2,lists:nth(4,ets:info(BigList))),
+	TableSize = Count, 
 	Ret = checkMessageQ(timeout, TableSize, Names, {NumSent, NumRecd}, 0, []),
 	if Ret == done ->
 			done;
 	   true ->
 		{NewQ, NewNumRecd} = Ret,
-
-		%reach(lists:usort(lists:filter(fun(X) -> ets:member(BigList,X)==false end, NewQ)),End, Names, BigList, {NumSent, NewNumRecd}) 
-		%reach([X || X <- NewQ, ets:member(BigList,X) == false], End, Names, BigList, {NumSent, NewNumRecd}) 
-		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd}, [])
+		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd}, [],Count)
 	end.
 
 
@@ -432,6 +427,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.20  2009/06/03 16:36:23  depaulfm
+% Removed ets references and unwanted commented lines; **FIXED** slaves traversal of list hostlist; **REPLACED** ets w/ bloom filter w/ fixed-sized, left commented out scalable bloom filters; The fixed-size of the bloom-filter HAS to become a parameter eventually (it is hardcoded right now); **MODIFIED** interface of reach to count visited states
+%
 % Revision 1.19  2009/05/25 01:47:05  depaulfm
 % Generalized mynode; Modified start to read a file containing a list of hosts; Added slaves which starts each node; Modified initThreads to take into account the generalized mynode. It requires a file called host in the directory from which you launch erl. Erlang should be launched w/ the following erl -sname pruser1 -rsh ssh
 %
