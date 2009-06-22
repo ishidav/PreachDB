@@ -34,6 +34,10 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
+cacheSize() -> 2048.
+
+cacheHitIndex() -> cacheSize() + 10.
+
 %%----------------------------------------------------------------------
 %% Function: mynode/3
 %% Purpose : Enumerate list of hosts where erlang workers are waiting for 
@@ -102,9 +106,16 @@ slaves([Host|Hosts], CWD, NHosts) ->
   Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
          " -pa " ++ CWD ++ "  -smp enable",
   NodeName = string:concat("pruser", integer_to_list(NHosts)),
-  {ok, Node} = slave:start_link(Host, NodeName, Args),
-  io:format("Erlang node started = [~p]~n", [Node]),
-  slaves(Hosts, CWD, NHosts - 1).
+  %{ok, Node} = slave:start_link(Host, NodeName, Args),
+   case slave:start_link(Host, NodeName, Args) of
+   {ok, Node} ->
+      io:format("Erlang node started = [~p]~n", [Node]),
+      slaves(Hosts, CWD, NHosts - 1);
+   {error,timeout} ->
+      io:format("Could not connect to host ~w...Exiting~n",[Host]),
+      halt()
+   end.
+
 
 
 compressState(State) ->
@@ -153,23 +164,31 @@ start(Start,End,P) ->
         slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
 	Names = initThreads([], P,End,HostList,Nhosts),
 
+	ets:new(cache,[ordered_set,private,named_table]),
+	ets:insert(cache,[{cacheHitIndex(), 0}]),
+
 	% ignoring Start parameter
 	%sendStates(Start, Names),
 	sendStates([startstate()],Names),
 	NumSent = length([startstate()]),
-         %ESBF = bloom:sbf(26700000,0.000001), %ESBF = erlang scalabable bloom filter
-         ESBF = bloom:bloom(576551,0.00001), %ESBF = erlang scalabable bloom filter
+        % ESBF = bloom:sbf(26700000,0.000001), %ESBF = erlang scalabable bloom filter
+        ESBF = bloom:bloom(576551,0.00001), %ESBF = erlang scalabable bloom filter
+
 	reach([], End, Names,ESBF,{NumSent,0},[], 0),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
 	NumStates = waitForTerm(dictToList(Names), 0),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	NumPurged = purgeRecQ(0),
+	NumCacheHits = HitCount = element(2,hd(ets:lookup(cache, cacheHitIndex()))),
+	ets:delete(cache),
+
 
 	io:format("----------~n"),
 	io:format("REPORT:~n"),
 	io:format("\tTotal of ~w states visited~n", [NumStates]),
 	io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
+	io:format("\t~w state-cache hits on the root thread~n", [NumCacheHits]),
 	io:format("\tExecution time: ~f seconds~n", [Dur]),
 	io:format("\tStates visited per second: ~w~n", [trunc(NumStates/Dur)]),
 	io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
@@ -205,14 +224,27 @@ purgeRecQ(Count) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates([], _Names) ->
-	ok;
+sendStates([], _Names, NumSent) ->
+	NumSent;
 
-sendStates([First | Rest], Names) ->
-%	Owner = lists:nth(1+erlang:phash2(First,length(Names)),Names),
-	Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
-	Owner ! {compressState(First), state},
-	sendStates(Rest, Names).
+sendStates([First | Rest], Names, NumSent) ->
+	CacheIndex = erlang:phash2(First, cacheSize())+1, % range is [1,2048]
+%	io:format("This CacheIndex is ~w~n", [CacheIndex]),
+	CacheLookup = ets:lookup(cache, CacheIndex),
+	if length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First ->
+%			io:format("Sanity check: (~w, ~w)~n", [element(2,hd(CacheLookup)), First]),
+			HitCount = element(2,hd(ets:lookup(cache, cacheHitIndex()))),
+			ets:insert(cache,[{cacheHitIndex(), HitCount+1}]),
+			sendStates(Rest, Names, NumSent);
+	   true ->
+		%	store in cache and send to owner
+			ets:insert(cache,[{CacheIndex,First}]),    
+			Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
+			Owner ! {compressState(First), state},
+			sendStates(Rest, Names, NumSent+1)
+	end.
+
+sendStates(States, Names) -> sendStates(States, Names, 0).
 
 
 %%----------------------------------------------------------------------
@@ -255,9 +287,15 @@ startWorker(End) ->
     receive
         {Names, names} -> do_nothing % dummy RHS
     end,
+	ets:new(cache,[ordered_set,private,named_table]),
+	ets:insert(cache,[{cacheHitIndex(), 0}]),
+
+
 	%reach([], End, Names,bloom:sbf(26700000,0.000001),{0,0},[],0),
 	reach([], End, Names,bloom:bloom(576551,0.00001),{0,0},[],0),
 	io:format("PID ~w: Worker is done~n", [self()]),
+
+	ets:delete(cache),
 	ok.
 
 %%----------------------------------------------------------------------
@@ -294,22 +332,24 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 		   true -> do_nothing
 		end,
 	%	sendStates(NewStates, Names),
-		NewNumSent = NumSent + length(NewStates),
+	%	NewNumSent = NumSent + length(NewStates),
    
         % io:format("a state ~w~n",[FirstState]),
-		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NewNumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
+%		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NewNumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
+		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
-	sendStates(SendList, Names),
+	NewNumSent = NumSent + sendStates(SendList, Names),
 	TableSize = Count, 
-	Ret = checkMessageQ(timeout, TableSize, Names, {NumSent, NumRecd}, 0, []),
+	Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, 0, []),
 	if Ret == done ->
 			done;
 	   true ->
 		{NewQ, NewNumRecd} = Ret,
-		reach(NewQ, End, Names, BigList, {NumSent, NewNumRecd}, [],Count)
+%		io:format("PID ~w: got ~w new states, for a total of ~w~n",[self(), NewNumRecd-NumRecd, NewNumRecd]),
+		reach(NewQ, End, Names, BigList, {NewNumSent, NewNumRecd}, [],Count)
 	end.
 
 
@@ -427,6 +467,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.21  2009/06/22 21:16:46  binghamb
+% Implemented a first shot at state-caching.
+%
 % Revision 1.20  2009/06/03 16:36:23  depaulfm
 % Removed ets references and unwanted commented lines; **FIXED** slaves traversal of list hostlist; **REPLACED** ets w/ bloom filter w/ fixed-sized, left commented out scalable bloom filters; The fixed-size of the bloom-filter HAS to become a parameter eventually (it is hardcoded right now); **MODIFIED** interface of reach to count visited states
 %
