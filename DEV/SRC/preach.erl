@@ -164,31 +164,29 @@ start(Start,End,P) ->
         slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
 	Names = initThreads([], P,End,HostList,Nhosts),
 
-	ets:new(cache,[ordered_set,private,named_table]),
+	ets:new(cache,[set,private,named_table]),
 	ets:insert(cache,[{cacheHitIndex(), 0}]),
 
 	% ignoring Start parameter
 	%sendStates(Start, Names),
-	sendStates([startstate()],Names),
-	NumSent = length([startstate()]),
+	sendStates(startstates(),Names),
+	NumSent = length(startstates()),
         % ESBF = bloom:sbf(26700000,0.000001), %ESBF = erlang scalabable bloom filter
         ESBF = bloom:bloom(576551,0.00001), %ESBF = erlang scalabable bloom filter
 
 	reach([], End, Names,ESBF,{NumSent,0},[], 0),
 
 	io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
-	NumStates = waitForTerm(dictToList(Names), 0),
+	{NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
   	Dur = timer:now_diff(now(), T0)*1.0e-6,
 	NumPurged = purgeRecQ(0),
-	NumCacheHits = HitCount = element(2,hd(ets:lookup(cache, cacheHitIndex()))),
 	ets:delete(cache),
-
 
 	io:format("----------~n"),
 	io:format("REPORT:~n"),
 	io:format("\tTotal of ~w states visited~n", [NumStates]),
 	io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
-	io:format("\t~w state-cache hits on the root thread~n", [NumCacheHits]),
+	io:format("\tTotal of ~w state-cache hits (average of ~w)~n", [NumHits, trunc(NumHits/P)]),
 	io:format("\tExecution time: ~f seconds~n", [Dur]),
 	io:format("\tStates visited per second: ~w~n", [trunc(NumStates/Dur)]),
 	io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
@@ -199,11 +197,11 @@ start() -> start(null,null,1), halt().
 
 
 waitForTerm(PIDs, _) ->
-	F = fun(_PID, Total) -> 	receive {DiffPID, NumStates, done} -> 
+	F = fun(_PID, {TotalStates, TotalHits}) -> 	receive {DiffPID, {NumStates, NumHits}, done} -> 
 				io:format("PID ~w: worker thread ~w has reported termination~n", [self(), DiffPID])
 				end,
-				Total + NumStates end,
-	lists:foldl(F, 0, PIDs).
+				{TotalStates + NumStates, TotalHits + NumHits} end,
+	lists:foldl(F, {0,0}, PIDs).
 
 purgeRecQ(Count) ->
 	receive
@@ -213,6 +211,8 @@ purgeRecQ(Count) ->
 		100 ->
 			Count
 	end.
+
+getHitCount() -> element(2,hd(ets:lookup(cache, cacheHitIndex()))).
 
 %%----------------------------------------------------------------------
 %% Function: sendStates/2
@@ -228,21 +228,22 @@ sendStates([], _Names, NumSent) ->
 	NumSent;
 
 sendStates([First | Rest], Names, NumSent) ->
+	Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
 	CacheIndex = erlang:phash2(First, cacheSize())+1, % range is [1,2048]
-%	io:format("This CacheIndex is ~w~n", [CacheIndex]),
 	CacheLookup = ets:lookup(cache, CacheIndex),
-	if length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First ->
-%			io:format("Sanity check: (~w, ~w)~n", [element(2,hd(CacheLookup)), First]),
-			HitCount = element(2,hd(ets:lookup(cache, cacheHitIndex()))),
-			ets:insert(cache,[{cacheHitIndex(), HitCount+1}]),
-			sendStates(Rest, Names, NumSent);
-	   true ->
-		%	store in cache and send to owner
+	WasSent = if Owner == self() -> % my state - send, do not cache
+		Owner ! {compressState(First), state},
+		1;
+	length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First -> % not my state, in cache - do not send
+		ets:insert(cache,[{cacheHitIndex(), getHitCount()+1}]),
+		0;
+	true -> % not my state, not in cache - send and cache
 			ets:insert(cache,[{CacheIndex,First}]),    
-			Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
 			Owner ! {compressState(First), state},
-			sendStates(Rest, Names, NumSent+1)
-	end.
+			1
+	end,
+	sendStates(Rest, Names, NumSent + WasSent).	
+
 
 sendStates(States, Names) -> sendStates(States, Names, 0).
 
@@ -287,7 +288,7 @@ startWorker(End) ->
     receive
         {Names, names} -> do_nothing % dummy RHS
     end,
-	ets:new(cache,[ordered_set,private,named_table]),
+	ets:new(cache,[set,private,named_table]),
 	ets:insert(cache,[{cacheHitIndex(), 0}]),
 
 
@@ -447,8 +448,8 @@ resumeWorkers(PIDs) ->
 	ok.
 
 terminateMe(NumStatesVisited, RootPID) ->
-	io:format("PID ~w: was told to die; visited ~w unique states~n", [self(), NumStatesVisited]),
-	RootPID ! {self(), NumStatesVisited, done},
+	io:format("PID ~w: was told to die; visited ~w unique states; ~w state-cache hits~n", [self(), NumStatesVisited, getHitCount()]),
+	RootPID ! {self(), {NumStatesVisited, getHitCount()}, done},
 	done.
 
 %%----------------------------------------------------------------------
@@ -467,6 +468,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.22  2009/06/24 00:24:09  binghamb
+% New caching scheme; changed from calling startstate() in gospel code to startstates(), which returns a list instead of a single state.
+%
 % Revision 1.21  2009/06/22 21:16:46  binghamb
 % Implemented a first shot at state-caching.
 %
