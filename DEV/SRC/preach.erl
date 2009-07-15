@@ -117,7 +117,15 @@ slaves([Host|Hosts], CWD, NHosts) ->
    end.
 
 
-
+%%----------------------------------------------------------------------
+%% Function: compressState/1 decompressState/1 
+%% Purpose : Translates state into some basic data-type 
+%%            	
+%% Args    : State 
+%%         
+%% Returns : Translated state 
+%%     
+%%----------------------------------------------------------------------
 compressState(State) ->
 %	stateToInt(State).
 	% stateToBits(State).
@@ -130,6 +138,17 @@ decompressState(CompressedState) ->
 
 %% end of configuration-type functions
 
+%%----------------------------------------------------------------------
+%% Function: rootPID/1
+%% Purpose : Find the pid associated w/ the root machine
+%%           
+%%            	
+%% Args    : Ordered dictionary of pids, where element 1 maps to the root
+%%          machine
+%%         
+%% Returns : pid
+%%     
+%%----------------------------------------------------------------------
 rootPID(Names) -> dict:fetch(1,Names). % hd(Names).  
 
 %%----------------------------------------------------------------------
@@ -193,9 +212,24 @@ start(Start,End,P) ->
 	io:format("----------~n"),
 	done.	
 
+%%----------------------------------------------------------------------
+%% Function: start/1
+%% Purpose : A timing wrapper for the parallel version of our model checker.
+%% Args    : P is the number of Erlang threads to use;
+%%	
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 start() -> start(null,null,1), halt().
 
-
+%%----------------------------------------------------------------------
+%% Function: waitForTerm/2
+%% Purpose : 
+%% Args    : 
+%%	     
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 waitForTerm(PIDs, _) ->
 	F = fun(_PID, {TotalStates, TotalHits}) -> 	receive {DiffPID, {NumStates, NumHits}, done} -> 
 				io:format("PID ~w: worker thread ~w has reported termination~n", [self(), DiffPID])
@@ -203,6 +237,14 @@ waitForTerm(PIDs, _) ->
 				{TotalStates + NumStates, TotalHits + NumHits} end,
 	lists:foldl(F, {0,0}, PIDs).
 
+%%----------------------------------------------------------------------
+%% Function: purgeRecQ/1
+%% Purpose : 
+%% Args    : 
+%%	     
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 purgeRecQ(Count) ->
 	receive
 		_Garbage ->
@@ -212,6 +254,14 @@ purgeRecQ(Count) ->
 			Count
 	end.
 
+%%----------------------------------------------------------------------
+%% Function: getHitCount/0
+%% Purpose : 
+%% Args    : 
+%%	     
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 getHitCount() -> element(2,hd(ets:lookup(cache, cacheHitIndex()))).
 
 %%----------------------------------------------------------------------
@@ -353,7 +403,16 @@ reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
 		reach(NewQ, End, Names, BigList, {NewNumSent, NewNumRecd}, [],Count)
 	end.
 
-
+%%----------------------------------------------------------------------
+%% Function: dictToList/1
+%% Purpose : 
+%%		
+%% Args    : 
+%%	     
+%%	     
+%% Returns : 
+%%     
+%%----------------------------------------------------------------------
 dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 
 %%----------------------------------------------------------------------
@@ -425,6 +484,13 @@ checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewState
 			{NewStates, NumRecd} 
 	end.
 
+%%----------------------------------------------------------------------
+%% Function: pollWorkers/2 
+%% Purpose :  
+%% Args    : 
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 pollWorkers([], _) ->
 	{0,0};
 
@@ -442,11 +508,25 @@ pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
 		io:format("PID ~w: Got a worker CommAcc of {~w,~w}~n", [self(),ThisSent,ThisRecd]),
 		{S+ThisSent, R+ThisRecd}
 	end.
-
+%%----------------------------------------------------------------------
+%% Function: resumeWorkers/1
+%% Purpose :  
+%% Args    : 
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
 resumeWorkers(PIDs) ->
 	lists:map(fun(PID) -> PID ! resume end, PIDs),
 	ok.
 
+%%----------------------------------------------------------------------
+%% Function: terminateMe/2
+%% Purpose : Terminates "this" node
+%% Args    : The number of states visited by this node
+%%           The root pid
+%% Returns : 
+%%     
+%%----------------------------------------------------------------------
 terminateMe(NumStatesVisited, RootPID) ->
 	io:format("PID ~w: was told to die; visited ~w unique states; ~w state-cache hits~n", [self(), NumStatesVisited, getHitCount()]),
 	RootPID ! {self(), {NumStatesVisited, getHitCount()}, done},
@@ -468,6 +548,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.23  2009/07/15 00:26:36  depaulfm
+% First cut at clean up
+%
 % Revision 1.22  2009/06/24 00:24:09  binghamb
 % New caching scheme; changed from calling startstate() in gospel code to startstates(), which returns a list instead of a single state.
 %
