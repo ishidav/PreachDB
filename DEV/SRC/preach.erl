@@ -34,9 +34,13 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
-cacheSize() -> 2048.
 
-cacheHitIndex() -> cacheSize() + 10.
+%%%%%%% MACROS #########
+-define(BLOOM_N_ENTRIES, 40000000).
+-define(BLOOM_ERR_PROB, 0.000001).
+-define(CACHE_SIZE, 2048).
+-define(CACHE_HIT_INDEX, ?CACHE_SIZE + 10).
+
 
 %%----------------------------------------------------------------------
 %% Function: mynode/3
@@ -54,7 +58,6 @@ cacheHitIndex() -> cacheSize() + 10.
 %%     
 %%----------------------------------------------------------------------
 mynode(Index, HostList, Nhosts) -> 
-       %list_to_atom(lists:append("pruser@",
        list_to_atom(lists:append( 
                           lists:append(
                                 lists:append("pruser", integer_to_list(Index)), "@"),
@@ -75,7 +78,7 @@ mynode(Index, HostList, Nhosts) ->
 %%----------------------------------------------------------------------
 read_inFile(InFile,HostList,SLine) ->
     case io:read(InFile, "", SLine) of
-        {ok, Host, ELine} ->
+        {ok, Host, _ELine} ->
             read_inFile(InFile, lists:append(HostList, [Host]), SLine + 1);
 
         {eof, ELine} ->
@@ -106,7 +109,6 @@ slaves([Host|Hosts], CWD, NHosts) ->
   Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
          " -pa " ++ CWD ++ "  -smp enable",
   NodeName = string:concat("pruser", integer_to_list(NHosts)),
-  %{ok, Node} = slave:start_link(Host, NodeName, Args),
    case slave:start_link(Host, NodeName, Args) of
    {ok, Node} ->
       io:format("Erlang node started = [~p]~n", [Node]),
@@ -128,15 +130,14 @@ slaves([Host|Hosts], CWD, NHosts) ->
 %%----------------------------------------------------------------------
 compressState(State) ->
 %	stateToInt(State).
-	% stateToBits(State).
-	State.
+	 stateToBits(State).
+	%State.
 
 decompressState(CompressedState) ->
 %		intToState(CompressedState).
-%		bitsToState(CompressedState).
-		CompressedState.
+		bitsToState(CompressedState).
+	%	CompressedState.
 
-%% end of configuration-type functions
 
 %%----------------------------------------------------------------------
 %% Function: rootPID/1
@@ -149,7 +150,7 @@ decompressState(CompressedState) ->
 %% Returns : pid
 %%     
 %%----------------------------------------------------------------------
-rootPID(Names) -> dict:fetch(1,Names). % hd(Names).  
+rootPID(Names) -> dict:fetch(1,Names).  
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -171,7 +172,7 @@ start(Start,End,P) ->
                     io:format("Read www/erlang.doc/man/io.html for more info...exiting~n",[]),
                  {HostList, Nhosts} = {null,null},
                     exit;
-             Other -> io:format("Error in parsing return value of file:open...exiting~n",[]),
+             _Other -> io:format("Error in parsing return value of file:open...exiting~n",[]),
                  {HostList, Nhosts} = {null,null},
                     exit
         end,
@@ -184,14 +185,11 @@ start(Start,End,P) ->
 	Names = initThreads([], P,End,HostList,Nhosts),
 
 	ets:new(cache,[set,private,named_table]),
-	ets:insert(cache,[{cacheHitIndex(), 0}]),
+	ets:insert(cache,[{?CACHE_HIT_INDEX, 0}]),
 
-	% ignoring Start parameter
-	%sendStates(Start, Names),
 	sendStates(startstates(),Names),
 	NumSent = length(startstates()),
-        % ESBF = bloom:sbf(26700000,0.000001), %ESBF = erlang scalabable bloom filter
-        ESBF = bloom:bloom(576551,0.00001), %ESBF = erlang scalabable bloom filter
+        ESBF = bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB), 
 
 	reach([], End, Names,ESBF,{NumSent,0},[], 0),
 
@@ -256,13 +254,13 @@ purgeRecQ(Count) ->
 
 %%----------------------------------------------------------------------
 %% Function: getHitCount/0
-%% Purpose : 
+%% Purpose : Used when caching sent states 
 %% Args    : 
 %%	     
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-getHitCount() -> element(2,hd(ets:lookup(cache, cacheHitIndex()))).
+getHitCount() -> element(2,hd(ets:lookup(cache, ?CACHE_HIT_INDEX))).
 
 %%----------------------------------------------------------------------
 %% Function: sendStates/2
@@ -274,28 +272,79 @@ getHitCount() -> element(2,hd(ets:lookup(cache, cacheHitIndex()))).
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates([], _Names, NumSent) ->
+sendStates(States, Names) -> 
+    StateCaching = init:get_argument(stateCaching),
+    if StateCaching == error ->
+          sendStates(nocaching,States, Names, 0);
+       true ->
+          sendStates(caching, States, Names, 0)
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: sendStates/4 (State Caching)
+%% Purpose : Sends a list of states to their respective owners, one at a time.
+%%           ToBrad: Explaing how Caching works		
+%%
+%% Args    : First is the state we're currently sending
+%%	     Rest are the rest of the states to send
+%%	     Names is a list of PIDs
+%%           NumSent is the number of states sent    
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+sendStates(caching, [], _Names, NumSent) ->
 	NumSent;
 
-sendStates([First | Rest], Names, NumSent) ->
+sendStates(caching, [First | Rest], Names, NumSent) ->
 	Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
-	CacheIndex = erlang:phash2(First, cacheSize())+1, % range is [1,2048]
+	CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
 	CacheLookup = ets:lookup(cache, CacheIndex),
 	WasSent = if Owner == self() -> % my state - send, do not cache
 		Owner ! {compressState(First), state},
 		1;
-	length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First -> % not my state, in cache - do not send
-		ets:insert(cache,[{cacheHitIndex(), getHitCount()+1}]),
+	length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First -> 
+               % not my state, in cache - do not send
+		ets:insert(cache,[{?CACHE_HIT_INDEX, getHitCount()+1}]),
 		0;
 	true -> % not my state, not in cache - send and cache
 			ets:insert(cache,[{CacheIndex,First}]),    
 			Owner ! {compressState(First), state},
 			1
 	end,
-	sendStates(Rest, Names, NumSent + WasSent).	
+	sendStates(caching, Rest, Names, NumSent + WasSent);
 
 
-sendStates(States, Names) -> sendStates(States, Names, 0).
+%%----------------------------------------------------------------------
+%% Function: sendStates/4 (NO State Caching)
+%% Purpose : Sends a list of states to their respective owners, one at a time.
+%%              
+%% Args    : First is the state we're currently sending
+%%           Rest are the rest of the states to send
+%%           Names is a list of PIDs
+%%           NumSent is the number of states sent    
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+sendStates(nocaching, [], _Names, NumSent) ->
+        NumSent;
+
+sendStates(nocaching, [First | Rest], Names, NumSent) ->
+        Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
+        CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
+        CacheLookup = ets:lookup(cache, CacheIndex),
+        WasSent = if Owner == self() -> % my state - send, do not cache
+                Owner ! {compressState(First), state},
+                1;
+        length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First ->
+               % not my state, in cache - do not send
+                ets:insert(cache,[{?CACHE_HIT_INDEX, getHitCount()+1}]),
+                0;
+        true -> % not my state, not in cache - send and cache
+                        ets:insert(cache,[{CacheIndex,First}]),
+                        Owner ! {compressState(First), state},
+                        1
+        end,
+        sendStates(nocaching, Rest, Names, NumSent + WasSent).
 
 
 %%----------------------------------------------------------------------
@@ -312,15 +361,15 @@ sendStates(States, Names) -> sendStates(States, Names, 0).
 %%----------------------------------------------------------------------
 initThreads(Names, 1, _Data, _HostList, _NHost) ->	
 	NamesList = [self() | Names],
-	NamesDict = dict:from_list(lists:zip(lists:seq(1,length(NamesList)), NamesList)),
+	NamesDict = dict:from_list(lists:zip(lists:seq(1,length(NamesList)), 
+		                             NamesList)),
 	NamesDict;
 
 % Data is just End right now
 initThreads(Names, NumThreads, Data, HostList, NHost) ->
 	ID = spawn(mynode(NumThreads, HostList, NHost),test,startWorker,[Data]),
-%	ID = spawn(mynode(NumThreads),german,startWorker,[Data]),
-%	ID = spawn(mynode(NumThreads),preach,startWorker,[Data]),
-	io:format("Starting worker thread on ~w with PID ~w~n", [mynode(NumThreads, HostList, NHost), ID]),
+	io:format("Starting worker thread on ~w with PID ~w~n", 
+                  [mynode(NumThreads, HostList, NHost), ID]),
 	FullNames = initThreads([ID | Names], NumThreads-1, Data, HostList, NHost),
 	ID ! {FullNames, names},
 	FullNames. % send each worker the PID list
@@ -339,11 +388,10 @@ startWorker(End) ->
         {Names, names} -> do_nothing % dummy RHS
     end,
 	ets:new(cache,[set,private,named_table]),
-	ets:insert(cache,[{cacheHitIndex(), 0}]),
+	ets:insert(cache,[{?CACHE_HIT_INDEX, 0}]),
 
 
-	%reach([], End, Names,bloom:sbf(26700000,0.000001),{0,0},[],0),
-	reach([], End, Names,bloom:bloom(576551,0.00001),{0,0},[],0),
+	reach([], End, Names,bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB),{0,0},[],0),
 	io:format("PID ~w: Worker is done~n", [self()]),
 
 	ets:delete(cache),
@@ -368,7 +416,7 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
-	case bloom:member(FirstState,BigList) of %dict:is_key(FirstState, BigList),
+	case bloom:member(FirstState,BigList) of 
 	true ->
 		reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList, Count);
 	false ->
@@ -382,12 +430,7 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 			rootPID(Names) ! end_found;
 		   true -> do_nothing
 		end,
-	%	sendStates(NewStates, Names),
-	%	NewNumSent = NumSent + length(NewStates),
-   
-        % io:format("a state ~w~n",[FirstState]),
-%		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NewNumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
-		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NumSent, NumRecd}, NewStates ++ SendList,Count+1) % grow the big list
+		reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NumSent, NumRecd}, NewStates ++ SendList,Count+1) 
 	end;
 
 % StateQ is empty, so check for messages. If none are found, we die
@@ -399,7 +442,6 @@ reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
 			done;
 	   true ->
 		{NewQ, NewNumRecd} = Ret,
-%		io:format("PID ~w: got ~w new states, for a total of ~w~n",[self(), NewNumRecd-NumRecd, NewNumRecd]),
 		reach(NewQ, End, Names, BigList, {NewNumSent, NewNumRecd}, [],Count)
 	end.
 
@@ -434,17 +476,18 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 %%     
 %%----------------------------------------------------------------------
 checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
-%	io:format("PID ~w: checking my message queue; ~w messages received so far~n", [self(), NumRecd]), % for debugging
 	IsRoot = rootPID(Names) == self(),
 	Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
 	receive
 	{State, state} ->
-		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0, [State|NewStates]);
+		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0,
+			      [State|NewStates]);
 	pause -> % report # messages sent/received
 		rootPID(Names) ! {NumSent, NumRecd, poll},
 		receive
 		resume ->
-			checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd},0, NewStates);
+			checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd},
+                                      0, NewStates);
 		die ->
 			terminateMe(BigListSize, rootPID(Names))
 		end;
@@ -454,7 +497,8 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 		terminateAll(tl(dictToList(Names))),
 		terminateMe(BigListSize, rootPID(Names))
 	after Timeout -> % wait for timeoutTime() ms if root 
-		io:format("PID ~w: Root has timed out, polling workers now...~n", [self()]),
+		io:format("PID ~w: Root has timed out, polling workers now...~n", 
+                          [self()]),
 		CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
 		CheckSum = element(1,CommAcc) - element(2,CommAcc),
 		if CheckSum == 0 ->	% time to die
@@ -462,21 +506,22 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 			terminateAll(tl(dictToList(Names))),
 			terminateMe(BigListSize, rootPID(Names));
 		true ->	% resume other processes and wait again for new states or timeout
-			io:format("PID ~w: unusual, checksum is ~w, will wait again for timeout...~n", [self(),CheckSum]),
+			io:format("PID ~w: unusual, checksum is ~w, will wait " ++ 
+                                  "again for timeout...~n", [self(),CheckSum]),
 			resumeWorkers(tl(dictToList(Names))),
-			checkMessageQ(timeout,BigListSize,Names,{NumSent,NumRecd},0, NewStates)
+			checkMessageQ(timeout, BigListSize, Names, {NumSent,NumRecd}, 
+                                      0, NewStates)
 		end
 	end;
 
-%checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) when Depth == 1000->
-%	{NewStates, NumRecd};
 
 % Get all queued messages without waiting
 checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
 	receive
 	% could check for pause messages here
 	{State, state} ->
-		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},Depth+1, [State|NewStates]);
+		checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
+                              Depth+1, [State|NewStates]);
 	die -> 
 		terminateMe(BigListSize, rootPID(Names))
 	after 
@@ -505,7 +550,8 @@ pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
 	{S, R} = pollWorkers(Rest, {RootSent, RootRecd}),
 	receive
 	{ThisSent, ThisRecd, poll} ->
-		io:format("PID ~w: Got a worker CommAcc of {~w,~w}~n", [self(),ThisSent,ThisRecd]),
+		io:format("PID ~w: Got a worker CommAcc of {~w,~w}~n", 
+                          [self(),ThisSent,ThisRecd]),
 		{S+ThisSent, R+ThisRecd}
 	end.
 %%----------------------------------------------------------------------
@@ -528,7 +574,8 @@ resumeWorkers(PIDs) ->
 %%     
 %%----------------------------------------------------------------------
 terminateMe(NumStatesVisited, RootPID) ->
-	io:format("PID ~w: was told to die; visited ~w unique states; ~w state-cache hits~n", [self(), NumStatesVisited, getHitCount()]),
+	io:format("PID ~w: was told to die; visited ~w unique states; ~w " ++ 
+                  "state-cache hits~n", [self(), NumStatesVisited, getHitCount()]),
 	RootPID ! {self(), {NumStatesVisited, getHitCount()}, done},
 	done.
 
@@ -548,6 +595,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.24  2009/07/16 21:19:29  depaulfm
+% Made state caching an option to be passed to erl as -state_caching; more code clean-up
+%
 % Revision 1.23  2009/07/15 00:26:36  depaulfm
 % First cut at clean up
 %
