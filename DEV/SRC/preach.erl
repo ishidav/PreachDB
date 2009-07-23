@@ -25,7 +25,7 @@
 % along with this program; if not, write to the Free Software
 % Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 %--------------------------------------------------------------------------------
-
+-include("$PREACH_PATH/preach.hrl").
 %
 % No module/exports defn since they should be included in the bottom of the 
 % gospel code
@@ -660,6 +660,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.26  2009/07/23 16:28:35  depaulfm
+% Added header call to preach.hrl
+%
 % Revision 1.25  2009/07/23 16:15:59  depaulfm
 % DEV/SRC/preach.erl:
 %
