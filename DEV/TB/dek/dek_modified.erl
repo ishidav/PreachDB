@@ -1,4 +1,4 @@
-% $Id: dek_modified.erl,v 1.2 2009/05/20 17:34:32 depaulfm Exp $
+% $Id: dek_modified.erl,v 1.3 2009/07/23 16:17:56 depaulfm Exp $
 %------------------------------------------------------------------------------
 %  LICENSE AGREEMENT
 % 
@@ -36,8 +36,10 @@
 %
 %---------------Manually added-------------------%
 
--module(test).
--export([start/3,startWorker/1]).
+-module(dek_modified).
+%-define(MODULE_NAME, dek_modified).
+%-export([start/3,startWorker/1]).
+-export([start/1,autoStart/1,startWorker/1]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 
 stateToBits(State) -> State.
@@ -175,8 +177,8 @@ rule7(State = #state{}, Field) ->
        true -> null
     end.
 %======================StartState=====================
-startstate() ->
-    #state{mu_s = #mu_s{s={mu_init,mu_init}},
+startstates() ->
+    [#state{mu_s = #mu_s{s={mu_init,mu_init}},
 	   mu_c = #mu_c{c={mu_unlocked,mu_unlocked}},
 	   mu_turn = #mu_turn{turn={1}}
-	  }.
+	  }].

@@ -1,11 +1,14 @@
--module(test).
+-module(german3).
 
 %
 % Exports the main routines defined in preach.erl
 %
--export([start/3,startWorker/1,transition/1]).
+-export([start/1,autoStart/1,startWorker/1]).
 
+stateToBits(State) -> State.
+bitsToState(Bits) -> Bits.
 stateMatch(State, Pattern) -> false.
+
 
 
 %%----------------------------------------------------------------------

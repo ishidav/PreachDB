@@ -1,0 +1,5 @@
+{'../../SRC/bloom', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'../../SRC/bitarray', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./german2', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./german3', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./german4', [return, native,{hipe, o3},{outdir, "ebin"}]}.

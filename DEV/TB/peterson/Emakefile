@@ -1,0 +1,5 @@
+{'../../SRC/bloom', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'../../SRC/bitarray', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./n5_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./n6_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'./n7_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
