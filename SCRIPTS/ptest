@@ -1,0 +1,170 @@
+#!/usr/bin/env perl
+#CVS: $Id: ptest,v 1.1 2009/07/23 16:19:30 depaulfm Exp $
+
+# LICENSE AGREEMENT
+#
+#  FileName                   [ptest.pl]
+#
+#  PackageName                [preach]
+#
+#  Synopsis                   [2nd-level script for running preach              ]
+#
+#  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+#
+#  Copyright                  [Copyright (C) 2009 University of British Columbia]
+# 
+#  This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+##############################################################################
+use 5.008;
+use warnings;
+use Getopt::Long qw(:config require_order pass_through);
+use Pod::Usage;
+use File::Basename;
+use Switch;
+
+Getopt::Long::Configure("require_order");
+
+#
+# Process Input Params
+#
+my $help      = 0;         # optional var to print out usage info 
+my $resudir   = "RESULTS"; # optional var defining results directory
+my $beamdir   = "ebin";    # optional var defining dir containing beam files
+my $module    = undef;     # required var defining test module 
+my $nnodes    = undef;     # required var defining # of nodes to run on 
+my $statecaching    = '';  # optional var choosing whether to cach states 
+my $mprofile  = undef;     # optional var choosing whether to mem profiling 
+my $log       = undef;     # optional var choosing whether to log run
+my $local     = '';        # optional var choosing whether to run locally
+
+
+GetOptions ('help|?'    => \$help,
+	    'resdir=s'  => \$resudir,
+	    'beamdir=s' => \$beamdir,
+	    'module=s'  => \$module,
+	    'nnodes=i'  => \$nnodes, 
+	    'statecaching'  => \$statecaching, 
+	    'mprofile'  => \$mprofile,
+	    'log'       => \$log,
+	    'local'       => \$local
+    );
+
+if ($#ARGV >= 0) { 
+    print "ptest: ERROR: Found this unknown options/args:\n";
+    foreach $arg (@ARGV) {
+	print "$arg ";
+	print "\nptest: Exiting...\n";
+	exit;
+    }
+}
+
+unless (defined($module)) {die "Need to define --module=modulename";}
+unless (defined($nnodes)) {die "Need to define --nnodes=integer";}
+
+pod2usage(-exitval => 0, -verbose => 2) if $help;
+
+=pod
+Example for call ::: NEED TO INCREMENT DESCRIPTION
+
+    ptest --beakdir=ebin --resdir=RESULTS --nnodes=2 --log --module=dek
+=cut
+####################################################
+#
+# Check required environment variables 
+#
+####################################################
+if ($local && !defined($ENV{PREACH_MACHINE})) {
+    print "ptest: ERROR: Need to setup PREACH_MACHINE\n";
+    exit(-1);
+}
+if (! -e "hosts") {
+    print "ptest: Warning: You have not defined the hosts files\n";
+    print "ptest: Warning: Creating a link to ../hosts file\n";
+    system("ln -s ../hosts");
+}
+if (! -e "ebin") {
+    system("mkdir ebin");
+}
+###################################################
+#
+# Compile  
+#
+####################################################
+my $erl_compile = "erl -noshell -run make all -run init stop";
+
+system("$erl_compile | tee emake.log");
+postProcess("compile", "emake.log");
+####################################################
+#
+# Run  
+#
+####################################################
+my $logfile = $module . ".log";
+my $erl_command;
+$erl_command = asmErlangCmd();
+system("$erl_command 2>&1| tee $logfile"); 
+
+####################################################
+#
+# Helping Subroutines  
+#
+####################################################
+#
+#
+#
+sub asmErlangCmd{
+    my $erl_command;
+    if ($local) {
+	$erl_command  = "erl -sname pruser1 -rsh ssh -pa $ENV{PWD}/$beamdir ";
+	$erl_command .= "-run $module autoStart 1  -run init stop ";
+	$erl_command .= "-localmode ";
+	if($statecaching) { $erl_command .= "-statecaching ";}
+    }else{
+	$erl_command  = "erl -sname pruser1 -rsh ssh -pa $ENV{PWD}/$beamdir ";
+	$erl_command .= "-run $module autoStart $nnodes -run init stop ";
+	if($statecaching) { $erl_command .= "-statecaching ";}
+    }
+    return $erl_command;
+}
+#
+#
+#
+sub postProcess{
+    my $mode = shift;
+    my $filename = shift;
+    my $FH;
+    if ($mode =~ /compile/) {
+	open($FH,"<$filename") or die "Could not open $filename\n";
+	
+	while(<$FH>){
+	    $line = $_;
+	    if ($line =~/error|undefined/i){
+		print "##############################################################\n";
+		die   "ptest: Erlang compilation error... Exiting\n";
+	    }
+	}
+    }elsif($mode =~ /run/){
+	open($FH,"<$filename") or die "Could not open $filename\n";
+	
+	while(<$FH>){
+	    $line = $_;
+	    if ($line =~/error/i){
+		print "##############################################################\n";
+		die   "ptest: Erlang runtime error... Exiting\n";
+	    }
+	}
+    }
+} 
+
