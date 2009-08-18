@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-#CVS: $Id: ptest,v 1.1 2009/07/23 16:19:30 depaulfm Exp $
+#CVS: $Id: ptest,v 1.2 2009/08/18 21:59:43 depaulfm Exp $
 
 # LICENSE AGREEMENT
 #
@@ -29,57 +29,38 @@
 ##############################################################################
 use 5.008;
 use warnings;
-use Getopt::Long qw(:config require_order pass_through);
+use Getopt::Long;
 use Pod::Usage;
 use File::Basename;
 use Switch;
 
-Getopt::Long::Configure("require_order");
-
 #
 # Process Input Params
 #
-my $help      = 0;         # optional var to print out usage info 
+my $help      = '';         # optional var to print out usage info 
 my $resudir   = "RESULTS"; # optional var defining results directory
 my $beamdir   = "ebin";    # optional var defining dir containing beam files
 my $module    = undef;     # required var defining test module 
-my $nnodes    = undef;     # required var defining # of nodes to run on 
+my $nnodes    = 1;         # required var defining # of nodes to run on 
 my $statecaching    = '';  # optional var choosing whether to cach states 
 my $mprofile  = undef;     # optional var choosing whether to mem profiling 
-my $log       = undef;     # optional var choosing whether to log run
 my $local     = '';        # optional var choosing whether to run locally
 
 
-GetOptions ('help|?'    => \$help,
+GetOptions ('help'    => \$help,
 	    'resdir=s'  => \$resudir,
 	    'beamdir=s' => \$beamdir,
 	    'module=s'  => \$module,
 	    'nnodes=i'  => \$nnodes, 
 	    'statecaching'  => \$statecaching, 
 	    'mprofile'  => \$mprofile,
-	    'log'       => \$log,
 	    'local'       => \$local
-    );
+    ) or usage("ERROR: Invalid command option");
 
-if ($#ARGV >= 0) { 
-    print "ptest: ERROR: Found this unknown options/args:\n";
-    foreach $arg (@ARGV) {
-	print "$arg ";
-	print "\nptest: Exiting...\n";
-	exit;
-    }
-}
 
-unless (defined($module)) {die "Need to define --module=modulename";}
-unless (defined($nnodes)) {die "Need to define --nnodes=integer";}
+if ($help) {usage(""); }
+unless (defined($module)) {usage("ERROR: Need to define --module=MODULE");}
 
-pod2usage(-exitval => 0, -verbose => 2) if $help;
-
-=pod
-Example for call ::: NEED TO INCREMENT DESCRIPTION
-
-    ptest --beakdir=ebin --resdir=RESULTS --nnodes=2 --log --module=dek
-=cut
 ####################################################
 #
 # Check required environment variables 
@@ -106,15 +87,17 @@ my $erl_compile = "erl -noshell -run make all -run init stop";
 
 system("$erl_compile | tee emake.log");
 postProcess("compile", "emake.log");
+
 ####################################################
 #
-# Run  
+# Run   
 #
 ####################################################
 my $logfile = $module . ".log";
 my $erl_command;
 $erl_command = asmErlangCmd();
 system("$erl_command 2>&1| tee $logfile"); 
+postProcess("run", $logfile);
 
 ####################################################
 #
@@ -130,12 +113,12 @@ sub asmErlangCmd{
 	$erl_command  = "erl -sname pruser1 -rsh ssh -pa $ENV{PWD}/$beamdir ";
 	$erl_command .= "-run $module autoStart 1  -run init stop ";
 	$erl_command .= "-localmode ";
-	if($statecaching) { $erl_command .= "-statecaching ";}
     }else{
 	$erl_command  = "erl -sname pruser1 -rsh ssh -pa $ENV{PWD}/$beamdir ";
 	$erl_command .= "-run $module autoStart $nnodes -run init stop ";
-	if($statecaching) { $erl_command .= "-statecaching ";}
     }
+
+    if($statecaching) { $erl_command .= "-statecaching ";}
     return $erl_command;
 }
 #
@@ -150,7 +133,7 @@ sub postProcess{
 	
 	while(<$FH>){
 	    $line = $_;
-	    if ($line =~/error|undefined/i){
+	    if ($line =~/^warning(variable.*[unbound|unsafe])|error|undefined/i){
 		print "##############################################################\n";
 		die   "ptest: Erlang compilation error... Exiting\n";
 	    }
@@ -168,3 +151,22 @@ sub postProcess{
     }
 } 
 
+sub usage{
+  my $msg = shift;
+
+  print "###########################################\n";
+  print "ptest: $msg\n\n";
+  print "usage: ptest --resdir=DIRA --beamdir=DIRB --module=MODULE --nnodes=NN";
+  print " --statecaching --mprofile --log --local\n\n";
+  print "where\n";
+  print " resdir     is a directory in which results will be saved ";
+  print "(default: RESULTS)\n";
+  print " beamdir    is a directory where erlang 'beam' files are located ";
+  print "(default: ebin)\n";
+  print " module     is the name of the module being model-checked      (REQUIRED)\n";
+  print " nnodes     is the number of nodes to use                      (CURRENTLY HAS NO EFFECT)\n";
+  print " statecaching defines whether to use per-node state-caching\n";
+  print " local        defines to use model-check locally\n";
+  print " mprofile     enables memory and cpu profiling                  (CURRENTLY HAS NO EFFECT)\n";
+  exit;
+}
