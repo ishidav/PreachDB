@@ -25,7 +25,7 @@
 % along with this program; if not, write to the Free Software
 % Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 %--------------------------------------------------------------------------------
--include("$PREACH_PATH/preach.hrl").
+-include("$PREACH_PATH/DEV/SRC/preach.hrl").
 %
 % No module/exports defn since they should be included in the bottom of the 
 % gospel code
@@ -149,7 +149,8 @@ read_inFile(InFile,HostList,SLine) ->
 %% Returns : 
 %%     
 %%----------------------------------------------------------------------
-slaves([], _CWD, _NHosts) ->
+%slaves([], _CWD, _NHosts) ->
+slaves(_Hostlist, _CWD, 1) ->
     ok;
 slaves([Host|Hosts], CWD, NHosts) ->
     Args0 = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
@@ -210,6 +211,33 @@ decompressState(CompressedState) ->
 %%----------------------------------------------------------------------
 rootPID(Names) -> dict:fetch(1,Names).  
 
+setup(End, P) ->
+    LocalMode = isLocalMode(),
+    if LocalMode ; P == 1 ->
+           Names = initThreads([], 1, End, [], 0);
+       true ->
+	    {HostList,Nhosts} = hosts(),
+	    {Status, CWD} = file:get_cwd(),
+	    if Status == error ->
+                    Names = null,
+		    io:format("setup: Error Could not read current directory." ++"
+                               Erlang reason: '~w'. ",[CWD]),
+                       halt();
+	       true ->  
+		    if P > Nhosts ->
+                               Names = null,
+			       io:format("setup: ERROR # of nodes > # of hosts" ++
+                                         "...Exiting\n"),
+			       halt();
+		       true -> 
+			    io:format("len(tl(host))=~w P=~w~n",[length(tl(HostList)),P]),
+			    slaves(lists:reverse(tl(HostList)), CWD, P),
+			    Names = initThreads([], P,End,HostList, P)
+		    end
+               end
+         end,
+     Names.
+
 %%----------------------------------------------------------------------
 %% Function: start/3
 %% Purpose : A timing wrapper for the parallel version of 
@@ -222,15 +250,7 @@ rootPID(Names) -> dict:fetch(1,Names).
 %%----------------------------------------------------------------------
 start(End,P) ->
     T0 = now(),
-    {HostList,Nhosts} = hosts(),
-    {Status, CWD} = file:get_cwd(),
-    if Status == error ->
-	    io:format("Could not read current directory. Erlang reason: '~w'. ",[CWD]);   
-       true -> ok
-    end,
-    slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
-    Names = initThreads([], P,End,HostList,Nhosts),
-    
+    Names = setup(End, P), 
     createStateCache(isCaching()),
 
     sendStates(startstates(),Names),
@@ -275,6 +295,7 @@ start(End,P) ->
 start(P) -> 
     displayHeader(),
     displayOptions(),
+    %process_flag(trap_exit,true),
     start(null, P).
 
 %%----------------------------------------------------------------------
@@ -288,6 +309,7 @@ start(P) ->
 autoStart(P) ->
     displayHeader(),
     displayOptions(),
+    %process_flag(trap_exit,true),
     start(null, list_to_integer(lists:nth(1,P))).
 
 %%----------------------------------------------------------------------
@@ -428,7 +450,7 @@ initThreads(Names, 1, _Data, _HostList, _NHost) ->
 
 % Data is just End right now
 initThreads(Names, NumThreads, Data, HostList, NHost) ->
-    ID = spawn(mynode(NumThreads, HostList, NHost),?MODULE,startWorker,[Data]),
+    ID = spawn_link(mynode(NumThreads, HostList, NHost),?MODULE,startWorker,[Data]),
     io:format("Starting worker thread on ~w with PID ~w~n", 
 	      [mynode(NumThreads, HostList, NHost), ID]),
     FullNames = initThreads([ID | Names], NumThreads-1, Data, HostList, NHost),
@@ -537,6 +559,10 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
     IsRoot = rootPID(Names) == self(),
     Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
     receive
+       {'EXIT', Pid, Reason } ->
+	     io:format("Received Exit from ~w w/ Reason ~w\n",[Pid,Reason]),
+	     terminateAll(tl(dictToList(Names))),
+             terminateMe(BigListSize, rootPID(Names));
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0,
 			  [State|NewStates]);
@@ -554,6 +580,7 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 	end_found -> 
 	    terminateAll(tl(dictToList(Names))),
 	    terminateMe(BigListSize, rootPID(Names))
+ 
     after Timeout -> % wait for timeoutTime() ms if root 
 	    io:format("PID ~w: Root has timed out, polling workers now...~n", 
 		      [self()]),
@@ -576,6 +603,10 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 % Get all queued messages without waiting
 checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
     receive
+       {'EXIT', Pid, Reason } ->
+	     io:format("Received Exit from ~w w/ Reason ~w\n",[Pid,Reason]),
+	     terminateAll(tl(dictToList(Names))),
+             terminateMe(BigListSize, rootPID(Names));
 	% could check for pause messages here
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
@@ -660,6 +691,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.27  2009/08/18 22:03:00  depaulfm
+% Added setup fun to cleanly handle localmode vs distributed mode; replaced spawn w/ spawn_link so that when a worker dies the root gets notified; fixed path the hrl file
+%
 % Revision 1.26  2009/07/23 16:28:35  depaulfm
 % Added header call to preach.hrl
 %
