@@ -150,7 +150,7 @@ read_inFile(InFile,HostList,SLine) ->
 %%     
 %%----------------------------------------------------------------------
 %slaves([], _CWD, _NHosts) ->
-slaves(_Hostlist, _CWD, 1) ->
+slaves(_Hostlist, _CWD, 1) -> 
     ok;
 slaves([Host|Hosts], CWD, NHosts) ->
     Args0 = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
@@ -211,32 +211,26 @@ decompressState(CompressedState) ->
 %%----------------------------------------------------------------------
 rootPID(Names) -> dict:fetch(1,Names).  
 
-setup(End, P) ->
+setup() ->
     LocalMode = isLocalMode(),
-    if LocalMode ; P == 1 ->
-           Names = initThreads([], 1, End, [], 0);
+    if LocalMode  ->
+	    Names = initThreads([], 1, null, [], 0), %% should remove null param
+	    Nhosts = 1;
        true ->
 	    {HostList,Nhosts} = hosts(),
 	    {Status, CWD} = file:get_cwd(),
 	    if Status == error ->
                     Names = null,
+		    Nhosts = 0,
 		    io:format("setup: Error Could not read current directory." ++"
                                Erlang reason: '~w'. ",[CWD]),
                        halt();
 	       true ->  
-		    if P > Nhosts ->
-                               Names = null,
-			       io:format("setup: ERROR # of nodes > # of hosts" ++
-                                         "...Exiting\n"),
-			       halt();
-		       true -> 
-			    io:format("len(tl(host))=~w P=~w~n",[length(tl(HostList)),P]),
-			    slaves(lists:reverse(tl(HostList)), CWD, P),
-			    Names = initThreads([], P,End,HostList, P)
-		    end
-               end
-         end,
-     Names.
+		    slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
+		    Names = initThreads([], Nhosts, null,HostList, Nhosts)%, %%% should remove null param
+	    end
+        end,
+    {Names, Nhosts}.
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -244,20 +238,19 @@ setup(End, P) ->
 %%				our model checker.
 %% Args    : P is the number of Erlang threads to use;
 %%			Start is a list of states to initialize the state queue;
-%%			End is the state we're looking for; may contain don't cares
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-start(End,P) ->
+start() ->
     T0 = now(),
-    Names = setup(End, P), 
+    {Names, P} = setup(), 
     createStateCache(isCaching()),
 
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
     ESBF = bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB), 
     
-    reach([], End, Names,ESBF,{NumSent,0},[], 0),
+    reach([], null, Names,ESBF,{NumSent,0},[], 0), %should remove null param
     
     io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
     {NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
@@ -285,32 +278,20 @@ start(End,P) ->
 
 
 %%----------------------------------------------------------------------
-%% Function: start/1
+%% Function: autoStart/1
 %% Purpose : A timing wrapper for the parallel version of our model checker.
+%%           To be used when called from the ptest script
+%%           
 %% Args    : P is the number of Erlang threads to use;
 %%	
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-start(P) -> 
+autoStart() ->
     displayHeader(),
     displayOptions(),
     %process_flag(trap_exit,true),
-    start(null, P).
-
-%%----------------------------------------------------------------------
-%% Function: autoStart/1
-%% Purpose : Same as above but called from the ptest script.
-%% Args    : P is a list containing the number of Erlang threads to use;
-%%	
-%% Returns :
-%%     
-%%----------------------------------------------------------------------
-autoStart(P) ->
-    displayHeader(),
-    displayOptions(),
-    %process_flag(trap_exit,true),
-    start(null, list_to_integer(lists:nth(1,P))).
+    start().
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/2
@@ -451,7 +432,7 @@ initThreads(Names, 1, _Data, _HostList, _NHost) ->
 % Data is just End right now
 initThreads(Names, NumThreads, Data, HostList, NHost) ->
     ID = spawn_link(mynode(NumThreads, HostList, NHost),?MODULE,startWorker,[Data]),
-    io:format("Starting worker thread on ~w with PID ~w~n", 
+   io:format("Starting worker thread on ~w with PID ~w~n", 
 	      [mynode(NumThreads, HostList, NHost), ID]),
     FullNames = initThreads([ID | Names], NumThreads-1, Data, HostList, NHost),
     ID ! {FullNames, names},
@@ -501,6 +482,8 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 	true ->
 	    reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList, Count);
 	false ->
+	    %profiling(length(RestStates), length(SendList), NumSent, NumRecd, Count),
+	    profiling(0, 0, NumSent, NumRecd, Count),
 	    CurState = decompressState(FirstState),
 	    NewStates = transition(CurState),
 	    EndFound = stateMatch(CurState,End),
@@ -537,6 +520,39 @@ reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
 %%----------------------------------------------------------------------
 dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 
+
+%%----------------------------------------------------------------------
+%% Function: profile/5
+%% Purpose : Provide some progress feedback. For now, WQsize and 
+%%           SendQsize are commented out because counting element in list
+%%           is expensive. We may change this in the future depending on
+%%           how we encode the workQueue
+%%		
+%% Args    : WQsize is the actual workQueue size
+%%           SendQsize is the actual SendList size
+%%	     NumSent is the number of states sent so far
+%%	     NumRecd is the number of states received so far
+%%           Count is the number of visited states
+%%
+%% Returns : 
+%%     
+%%----------------------------------------------------------------------
+profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count) ->
+    if (Count rem 10000)  == 0 ->
+%	    io:format("VS=~w, |WQ|=~w, |SQ|=~w, NS=~w, NR=~w" ++ 
+%		      " |MemSys|=~w, |MemProc|=~w ->~w~n", 
+%		      [Count, WQsize, SendQsize, NumSent, NumRecd,
+%		       erlang:memory(system), erlang:memory(processes),self()]);
+	    io:fwrite("VS=~w,  NS=~w, NR=~w" ++ 
+		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB ->~w~n", 
+		      [Count, NumSent, NumRecd,
+		       erlang:memory(system)/1048576, 
+		       erlang:memory(processes)/1048576,self()]);
+
+       true -> ok
+    end.
+
+
 %%----------------------------------------------------------------------
 %% Function: checkMessageQ/5-6
 %% Purpose : Polls for incoming messages
@@ -560,9 +576,13 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
     Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
     receive
        {'EXIT', Pid, Reason } ->
-	     io:format("Received Exit from ~w w/ Reason ~w\n",[Pid,Reason]),
-	     terminateAll(tl(dictToList(Names))),
-             terminateMe(BigListSize, rootPID(Names));
+ 	    io:format("~w Received Exit from ~w w/ Reason ~w ~n Exiting immediately...~n",[self(), Pid,Reason]),
+ 	    case net_kernel:connect(node(Pid)) of 
+ 		true -> ok;
+ 		_Other  ->
+		    halt()
+ 	    end;
+
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0,
 			  [State|NewStates]);
@@ -603,10 +623,13 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 % Get all queued messages without waiting
 checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
     receive
-       {'EXIT', Pid, Reason } ->
-	     io:format("Received Exit from ~w w/ Reason ~w\n",[Pid,Reason]),
-	     terminateAll(tl(dictToList(Names))),
-             terminateMe(BigListSize, rootPID(Names));
+        {'EXIT', Pid, Reason } ->
+	    io:format("Received Exit from ~w w/ Reason ~w ~n Exiting immediately...~n",[Pid,Reason]),
+ 	    case net_kernel:connect(node(Pid)) of 
+ 		true -> ok;
+ 		_Other  ->
+		    halt()
+ 	    end;
 	% could check for pause messages here
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
@@ -691,6 +714,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.28  2009/08/19 05:08:20  depaulfm
+% Fixed start/autoStart funs by reverting prior intent of defining number of threads on a subset of names in the hosts file; added a profiling function; tested n5_peterson and n6_peterson on 8 threads
+%
 % Revision 1.27  2009/08/18 22:03:00  depaulfm
 % Added setup fun to cleanly handle localmode vs distributed mode; replaced spawn w/ spawn_link so that when a worker dies the root gets notified; fixed path the hrl file
 %
