@@ -1,4 +1,4 @@
-% $Id: n6_peterson_modified.erl,v 1.1 2009/07/23 16:18:26 depaulfm Exp $
+% $Id: n6_peterson_modified.erl,v 1.2 2009/08/19 05:05:23 depaulfm Exp $
 %------------------------------------------------------------------------------
 %  LICENSE AGREEMENT
 % 
@@ -6,7 +6,8 @@
 % 
 %  PackageName                [preach]
 % 
-%  Synopsis                   [This is a semi-automatic translation of         ]%                             [ 6_peterson_modified.m                          ]
+%  Synopsis                   [This is a semi-automatic translation of         ]
+%                             [ 6_peterson_modified.m                          ]
 % 
 %  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
 % 
@@ -37,7 +38,7 @@
 %---------------Manually added-------------------%
 
 -module(n6_peterson_modified).
--export([start/1, autoStart/1, startWorker/1]).
+-export([start/0, autoStart/0, startWorker/1]).
 %-export([start/3,startWorker/1]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 
