@@ -39,11 +39,10 @@ timeoutTime() -> 3000.
 %% Function: createStateCache/1, deleteStateCache/1
 %% Purpose : Routines to abstract away how the cache is implemented, eg,
 %%           erlang lists, ets or dict, etc...
+%%           Note that w/ ets the table is referenced by its name,
+%%          which type is an atom
 %%               
 %% Args    : boolean resulting from calling isCaching() 
-%%
-%% NOTE    : More work needs to abstract away other calls like 
-%%           ets:lookup, ets:insert, etc
 %%
 %% Returns : 
 %%     
@@ -63,6 +62,45 @@ deleteStateCache(Delete) ->
 	    ok
     end.
 
+%%----------------------------------------------------------------------
+%% Function: stateCacheLookup/1
+%% Purpose : Routines to abstract away how the cache is implemented, eg,
+%%           erlang lists, ets or dict, etc...
+%%               
+%% Args    : cache location 
+%%
+%%
+%% Returns : A list containing a tuple w/ the element matching the cache 
+%%          location in the following format {Index, State}
+%%          
+%%----------------------------------------------------------------------
+stateCacheLookup(CacheIndex) ->
+    ets:lookup(cache, CacheIndex).
+
+%%----------------------------------------------------------------------
+%% Function: stateCacheInsert/2
+%% Purpose : Routines to abstract away how the cache is implemented, eg,
+%%           erlang lists, ets or dict, etc...
+%%               
+%% Args    : cache location and element to be cached
+%%
+%%
+%% Returns : true
+%%          
+%%----------------------------------------------------------------------
+stateCacheInsert(CacheIndex, State) ->
+    ets:insert(cache,[{CacheIndex, State}]).
+
+%%----------------------------------------------------------------------
+%% Function: getHitCount/0
+%% Purpose : Used only when caching send states. 
+%% Args    : 
+%%	     
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+getHitCount() -> 
+    element(2,hd(stateCacheLookup(?CACHE_HIT_INDEX))).
 
 %%----------------------------------------------------------------------
 %% Function: mynode/3
@@ -149,7 +187,6 @@ read_inFile(InFile,HostList,SLine) ->
 %% Returns : 
 %%     
 %%----------------------------------------------------------------------
-%slaves([], _CWD, _NHosts) ->
 slaves(_Hostlist, _CWD, 1) -> 
     ok;
 slaves([Host|Hosts], CWD, NHosts) ->
@@ -179,7 +216,7 @@ slaves([Host|Hosts], CWD, NHosts) ->
 
 
 %%----------------------------------------------------------------------
-%% Function: compressState/1 decompressState/1 
+%% Function: compressState/1, decompressState/1, hashState2Int/1 
 %% Purpose : Translates state into some basic data-type 
 %%            	
 %% Args    : State 
@@ -197,6 +234,8 @@ decompressState(CompressedState) ->
     bitsToState(CompressedState).
 	%	CompressedState.
 
+hashState2Int(State) ->
+    erlang:phash2(State,round(math:pow(2,32))).
 
 %%----------------------------------------------------------------------
 %% Function: rootPID/1
@@ -211,10 +250,23 @@ decompressState(CompressedState) ->
 %%----------------------------------------------------------------------
 rootPID(Names) -> dict:fetch(1,Names).  
 
+%%----------------------------------------------------------------------
+%% Function: setup/
+%% Purpose : Automatically start the distributed erts, or statrt locally
+%%           if in local mode
+%%           
+%%            	
+%% Args    : Ordered dictionary of pids, where element 1 maps to the root
+%%          machine
+%%         
+%% Returns : pid
+%%     
+%%----------------------------------------------------------------------
 setup() ->
     LocalMode = isLocalMode(),
     if LocalMode  ->
-	    Names = initThreads([], 1, null, [], 0), %% should remove null param
+	    %% FMP should remove null param
+	    Names = initThreads([], 1, null, [], 0),
 	    Nhosts = 1;
        true ->
 	    {HostList,Nhosts} = hosts(),
@@ -227,7 +279,8 @@ setup() ->
                        halt();
 	       true ->  
 		    slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
-		    Names = initThreads([], Nhosts, null,HostList, Nhosts)%, %%% should remove null param
+		    %FMP should remove null param
+		    Names = initThreads([], Nhosts, null,HostList, Nhosts)
 	    end
         end,
     {Names, Nhosts}.
@@ -279,10 +332,11 @@ start() ->
 
 %%----------------------------------------------------------------------
 %% Function: autoStart/1
-%% Purpose : A timing wrapper for the parallel version of our model checker.
+%% Purpose : A wrapper for the parallel version of our model checker.
 %%           To be used when called from the ptest script
-%%           
-%% Args    : P is the number of Erlang threads to use;
+%%           The main purpose is to separate basic initialization (non-algorithmic)
+%%          from the rest of the compuation
+%% Args    : 
 %%	
 %% Returns :
 %%     
@@ -290,7 +344,7 @@ start() ->
 autoStart() ->
     displayHeader(),
     displayOptions(),
-    %process_flag(trap_exit,true),
+    process_flag(trap_exit,true),
     start().
 
 %%----------------------------------------------------------------------
@@ -305,7 +359,10 @@ waitForTerm(PIDs, _) ->
     F = fun(_PID, {TotalStates, TotalHits}) -> 	
           	receive {DiffPID, {NumStates, NumHits}, done} -> 
 			io:format("PID ~w: worker thread ~w has reported " ++
-				  "termination~n", [self(), DiffPID])
+				  "termination~n", [self(), DiffPID]);
+			{'EXIT', Pid, Reason } ->
+			exitHandler(Pid,Reason),
+			NumStates = 0, NumHits = 0
 	        end,
 		{TotalStates + NumStates, TotalHits + NumHits} 
 	end,
@@ -321,6 +378,9 @@ waitForTerm(PIDs, _) ->
 %%----------------------------------------------------------------------
 purgeRecQ(Count) ->
     receive
+	{'EXIT', Pid, Reason } ->
+	    exitHandler(Pid,Reason),
+	    purgeRecQ(Count);
 	_Garbage ->
 	    purgeRecQ(Count+1)
     after
@@ -329,15 +389,35 @@ purgeRecQ(Count) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: getHitCount/0
-%% Purpose : Used only when caching sent states. 
-%% Args    : 
-%%	     
-%% Returns :
+%% Function: exitHandler/2
+%% Purpose : Handling dying distributed nodes. Assuming the requirements
+%%           (below) are fulfilled, a dying node sends a message to the
+%%           root w/ it's dying reason.
+%%           If the reason is normal it means we are finishing the computation
+%%	     otherwise, either the network got interrupted or the node really
+%%           died. Therefore, check if the node is truly dead before killing the
+%%           whole computation
+%% 	
+%% Args    : First is the state we're currently sending
+%%		Rest are the rest of the states to send
+%%		Names is a list of PIDs
+%%
+%% REQUIRES: process_flag(exit,trap) to be called;
+%%           nodes to be linked 
+%% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-getHitCount() -> 
-    element(2,hd(ets:lookup(cache, ?CACHE_HIT_INDEX))).
+exitHandler(Pid,Reason) ->
+    io:format("~w Received Exit from ~w w/ Reason ~w~n",[self(), Pid,Reason]),
+    if Reason =/= normal ->
+	    case net_kernel:connect(node(Pid)) of 
+		true -> ok;
+		_Other  -> 
+		    io:format("~n Exiting immediately...~n",[]),
+		    halt()
+	    end;
+       true -> ok
+    end.
 
 %%----------------------------------------------------------------------
 %% Function: sendStates/2
@@ -356,7 +436,7 @@ sendStates(States, Names) ->
        true ->
 	    sendStates(nocaching, States, Names, 0)
     end.
-
+   
 %%----------------------------------------------------------------------
 %% Function: sendStates/4 (State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
@@ -375,16 +455,17 @@ sendStates(caching, [], _Names, NumSent) ->
 sendStates(caching, [First | Rest], Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
-    CacheLookup = ets:lookup(cache, CacheIndex),
+    CacheLookup = stateCacheLookup(CacheIndex),
+    CompactedState = hashState2Int(First),
     WasSent = if Owner == self() -> % my state - send, do not cache
 		      Owner ! {compressState(First), state},
 		      1;
-		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == First -> 
+		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == CompactedState -> %First -> 
 			% not my state, in cache - do not send
-		      ets:insert(cache,[{?CACHE_HIT_INDEX, getHitCount()+1}]),
+		      stateCacheInsert(?CACHE_HIT_INDEX, getHitCount()+1),
 		      0;
 		 true -> % not my state, not in cache - send and cache
-		      ets:insert(cache,[{CacheIndex,First}]),    
+		      stateCacheInsert(CacheIndex, hashState2Int(First)),
 		      Owner ! {compressState(First), state},
 		      1
 	      end,
@@ -493,7 +574,8 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-	    reach(RestStates, End, Names, bloom:add(FirstState,BigList), {NumSent, NumRecd}, NewStates ++ SendList,Count+1) 
+	    reach(RestStates, End, Names, bloom:add(FirstState,BigList), 
+		  {NumSent, NumRecd}, NewStates ++ SendList,Count+1) 
     end;
 
 % StateQ is empty, so check for messages. If none are found, we die
@@ -538,16 +620,18 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 %%     
 %%----------------------------------------------------------------------
 profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count) ->
-    if (Count rem 10000)  == 0 ->
+    if (Count rem 10000)  == 0 -> 
 %	    io:format("VS=~w, |WQ|=~w, |SQ|=~w, NS=~w, NR=~w" ++ 
 %		      " |MemSys|=~w, |MemProc|=~w ->~w~n", 
 %		      [Count, WQsize, SendQsize, NumSent, NumRecd,
 %		       erlang:memory(system), erlang:memory(processes),self()]);
 	    io:fwrite("VS=~w,  NS=~w, NR=~w" ++ 
-		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB ->~w~n", 
+		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB |Q|=~w->~w~n", 
 		      [Count, NumSent, NumRecd,
 		       erlang:memory(system)/1048576, 
-		       erlang:memory(processes)/1048576,self()]);
+		       erlang:memory(processes)/1048576, 
+		       element(2,process_info(self(),message_queue_len)), 
+		       self()]);
 
        true -> ok
     end.
@@ -575,28 +659,29 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
     IsRoot = rootPID(Names) == self(),
     Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
     receive
-       {'EXIT', Pid, Reason } ->
- 	    io:format("~w Received Exit from ~w w/ Reason ~w ~n Exiting immediately...~n",[self(), Pid,Reason]),
- 	    case net_kernel:connect(node(Pid)) of 
- 		true -> ok;
- 		_Other  ->
-		    halt()
- 	    end;
+	{'EXIT', Pid, Reason } ->
+	    exitHandler(Pid,Reason);
 
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0,
 			  [State|NewStates]);
+
 	pause -> % report # messages sent/received
 	    rootPID(Names) ! {NumSent, NumRecd, poll},
-	    receive
+	    receive     
+		{'EXIT', Pid, Reason } ->
+		    exitHandler(Pid,Reason);
+
 		resume ->
 		    checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd},
 				  0, NewStates);
 		die ->
 		    terminateMe(BigListSize, rootPID(Names))
 	    end;
+
 	die -> 
 	    terminateMe(BigListSize, rootPID(Names));
+
 	end_found -> 
 	    terminateAll(tl(dictToList(Names))),
 	    terminateMe(BigListSize, rootPID(Names))
@@ -623,21 +708,20 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 % Get all queued messages without waiting
 checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
     receive
-        {'EXIT', Pid, Reason } ->
-	    io:format("Received Exit from ~w w/ Reason ~w ~n Exiting immediately...~n",[Pid,Reason]),
- 	    case net_kernel:connect(node(Pid)) of 
- 		true -> ok;
- 		_Other  ->
-		    halt()
- 	    end;
+	{'EXIT', Pid, Reason } ->
+	    exitHandler(Pid,Reason);
+
 	% could check for pause messages here
+
 	{State, state} ->
 	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
 			  Depth+1, [State|NewStates]);
+
 	die -> 
 	    terminateMe(BigListSize, rootPID(Names))
+
     after 
-		0 -> % wait for 0 ms  
+	0 -> % wait for 0 ms  
 	    {NewStates, NumRecd} 
     end.
 
@@ -661,6 +745,9 @@ pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
     ThisPID ! pause,
     {S, R} = pollWorkers(Rest, {RootSent, RootRecd}),
     receive
+	{'EXIT', Pid, Reason } ->
+	    exitHandler(Pid,Reason);
+
 	{ThisSent, ThisRecd, poll} ->
 	    io:format("PID ~w: Got a worker CommAcc of {~w,~w}~n", 
 		      [self(),ThisSent,ThisRecd]),
@@ -714,6 +801,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.29  2009/08/22 17:34:14  depaulfm
+% Finished abstracting state caching; Modified state caching to store only the 32-bit hashed value of states; added EXIT handler routine together w/ process_flag to trap on exit; code cleanup
+%
 % Revision 1.28  2009/08/19 05:08:20  depaulfm
 % Fixed start/autoStart funs by reverting prior intent of defining number of threads on a subset of names in the hosts file; added a profiling function; tested n5_peterson and n6_peterson on 8 threads
 %
