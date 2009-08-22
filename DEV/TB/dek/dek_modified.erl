@@ -1,4 +1,4 @@
-% $Id: dek_modified.erl,v 1.3 2009/07/23 16:17:56 depaulfm Exp $
+% $Id: dek_modified.erl,v 1.4 2009/08/22 19:49:17 depaulfm Exp $
 %------------------------------------------------------------------------------
 %  LICENSE AGREEMENT
 % 
@@ -39,7 +39,7 @@
 -module(dek_modified).
 %-define(MODULE_NAME, dek_modified).
 %-export([start/3,startWorker/1]).
--export([start/1,autoStart/1,startWorker/1]).
+-export([start/0,autoStart/0,startWorker/1]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 
 stateToBits(State) -> State.
