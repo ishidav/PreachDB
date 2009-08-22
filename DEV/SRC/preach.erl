@@ -354,7 +354,8 @@ start() ->
     reach([], null, Names,HashTable,{NumSent,0},[], 0), %should remove null param
     
     io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
-    {NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
+    %{NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
+    {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
     Dur = timer:now_diff(now(), T0)*1.0e-6,
     NumPurged = purgeRecQ(0),
     deleteStateCache(isCaching()),
@@ -396,25 +397,41 @@ autoStart() ->
     start().
 
 %%----------------------------------------------------------------------
-%% Function: waitForTerm/2
-%% Purpose : 
-%% Args    : 
-%%	     
-%% Returns :
+%% Function: waitForTerm/4
+%% Purpose : Accumulate number of states visited and cache hits 
+%%           Calls exitHandler when receiving 'EXIT' 
+%%
+%% Args    : PIDs list of workers
+%%           TotalStates is the number of unique visited state per node
+%%	     TotalHits is the number of cache hits per node
+%%           Cover is a simple marker to identify that we are done when
+%%           all workers have reported their numbers
+%%
+%% Assumption: Each node only reports its numbers once (impact on Cover)
+%%
+%% Returns : a tuple w/ total visited states and and total hits
 %%     
 %%----------------------------------------------------------------------
-waitForTerm(PIDs, _) ->
-    F = fun(_PID, {TotalStates, TotalHits}) -> 	
-          	receive {DiffPID, {NumStates, NumHits}, done} -> 
-			io:format("PID ~w: worker thread ~w has reported " ++
-				  "termination~n", [self(), DiffPID]);
-			{'EXIT', Pid, Reason } ->
-			exitHandler(Pid,Reason),
-			NumStates = 0, NumHits = 0
-	        end,
-		{TotalStates + NumStates, TotalHits + NumHits} 
-	end,
-    lists:foldl(F, {0,0}, PIDs).
+waitForTerm(PIDs, TotalStates, TotalHits, Cover) ->
+    if Cover < length(PIDs) ->
+	    receive
+		{DiffPID, {NumStates, NumHits}, done} -> 
+		    io:format("PID ~w: worker thread ~w has reported " ++
+			      "termination~n", [self(), DiffPID]),%;
+		    waitForTerm(PIDs,TotalStates + NumStates, 
+				TotalHits + NumHits, Cover +1);
+		{'EXIT', Pid, Reason } ->
+		    exitHandler(Pid,Reason),
+		    NumStates = 0, NumHits = 0,
+		    waitForTerm(PIDs,TotalStates + NumStates, 
+				TotalHits + NumHits, Cover)
+	    end;
+       true ->
+	    {TotalStates, TotalHits}
+    end.
+
+
+
 
 %%----------------------------------------------------------------------
 %% Function: purgeRecQ/1
@@ -430,6 +447,7 @@ purgeRecQ(Count) ->
 	    exitHandler(Pid,Reason),
 	    purgeRecQ(Count);
 	_Garbage ->
+	    io:format("Garbage =~w~n",[_Garbage]),
 	    purgeRecQ(Count+1)
     after
 	100 ->
@@ -851,6 +869,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.31  2009/08/22 19:52:00  depaulfm
+% By adding the exit handler I introduced a bug in waitForTerm; I re-wrote waitForTerm so that it properly handles EXIT messages from workers
+%
 % Revision 1.30  2009/08/22 18:17:20  depaulfm
 % Abstracted away how the hash table is implemented
 %
