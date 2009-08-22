@@ -3,7 +3,7 @@
 %
 % Exports the main routines defined in preach.erl
 %
--export([start/1, autoStart/1, startWorker/1]).
+-export([start/0, autoStart/0, startWorker/1]).
 
 stateToBits(State) -> State.
 bitsToState(Bits) -> Bits.

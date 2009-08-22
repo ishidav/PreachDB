@@ -14,7 +14,7 @@
 %    which appears necessary to do the generalization cleanly.  
 %
 
--export([start/1,autoStart/1,startWorker/1]).
+-export([start/0,autoStart/0,startWorker/1]).
 %-export([start/0,startWorker/1]).
 % -export([transition/1,startstate/0]).
 
