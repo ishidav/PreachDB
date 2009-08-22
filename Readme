@@ -1,2 +1,44 @@
-%$Id: Readme,v 1.1 2009/02/13 23:45:18 depaulfm Exp $
+%$Id: Readme,v 1.2 2009/08/22 20:16:43 depaulfm Exp $
 %
+
+Regards preach v1.31:
+
+1) Updating your local area:
+
+  <$PREACH_PATH> cvs update -A -d
+
+2) Getting a fresh copy of preach: (optional)
+
+  <work_directory> cvs get -A preach
+
+
+3) Add the following to your $PATH (you should do it in you .cshrc right after the line where
+you have defined PREACH_PATH):
+
+setenv PATH  $PREACH_PATH/SCRIPTS:$PATH 
+
+
+4) To run:
+
+you need to have a hosts file in which each line has the following strict format:
+
+nodename1.
+nodename2.
+
+where nodename* is the node's short-name, e.g., fossa, avahi. Node the 'dot' after the name. 
+
+go to the peterson directory or german and type
+
+ptest --module=n5_peterson_modified
+
+or 
+
+ptest --module=german4
+
+or 
+
+ptest --help for info
+
+
+ptest should be the only way we want to run PReach, so I'm not going to write directions on how not to use ptest.
+Just remember that if you don't want to run in distributed mode you can pass --local to ptest (see ptest --help)
