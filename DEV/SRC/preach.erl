@@ -34,6 +34,54 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
+%%----------------------------------------------------------------------
+%% Function: createHashTable/1
+%% Purpose : Routines to abstract away how the hash table is implemented, eg,
+%%           erlang lists, ets or dict, bloom filter
+%%               
+%% Args    : 
+%%
+%% Returns : a variable which type depends on the implementation, eg, 
+%%           bloom filter will return a record type; 
+%%     
+%%----------------------------------------------------------------------
+createHashTable() ->
+    bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB).
+
+%%----------------------------------------------------------------------
+%% Function: isMemberHashTable/2
+%% Purpose : Checks for membership in the hash table
+%%               
+%% Args    : Element is the state that we want to check
+%%           HashTable is the name of the hash table returned by
+%%           createHashTable
+%%
+%% Returns : returns true or false
+%%     
+%%----------------------------------------------------------------------
+isMemberHashTable(Element, HashTable) ->
+    case bloom:member(Element,HashTable) of 
+	true ->
+	     true;
+	false ->
+	    false
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: addElemToHashTable/2
+%% Purpose : Add a state to the hash table
+%%           
+%%               
+%% Args    :  Element is the state that we want to add
+%%           HashTable is the name of the hash table returned by
+%%           createHashTable
+%%
+%% Returns : a variable which type depends on the implementation, eg, 
+%%           bloom filter will return a record type; 
+%%     
+%%----------------------------------------------------------------------
+addElemToHashTable(Element, HashTable)->
+    bloom:add(Element,HashTable).
 
 %%----------------------------------------------------------------------
 %% Function: createStateCache/1, deleteStateCache/1
@@ -301,9 +349,9 @@ start() ->
 
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
-    ESBF = bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB), 
-    
-    reach([], null, Names,ESBF,{NumSent,0},[], 0), %should remove null param
+    HashTable = createHashTable(),
+
+    reach([], null, Names,HashTable,{NumSent,0},[], 0), %should remove null param
     
     io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
     {NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
@@ -534,7 +582,9 @@ startWorker(End) ->
     end,
     createStateCache(isCaching()),
 
-    reach([], End, Names,bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB),{0,0},[],0),
+    HashTable = createHashTable(),
+
+    reach([], End, Names,HashTable,{0,0},[],0),
     io:format("PID ~w: Worker is done~n", [self()]),
     
     deleteStateCache(isCaching()),
@@ -558,10 +608,10 @@ startWorker(End) ->
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
-    case bloom:member(FirstState,BigList) of 
+reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
+    case isMemberHashTable(FirstState,HashTable) of 
 	true ->
-	    reach(RestStates, End, Names, BigList, {NumSent, NumRecd}, SendList, Count);
+	    reach(RestStates, End, Names, HashTable, {NumSent, NumRecd}, SendList, Count);
 	false ->
 	    %profiling(length(RestStates), length(SendList), NumSent, NumRecd, Count),
 	    profiling(0, 0, NumSent, NumRecd, Count),
@@ -574,12 +624,12 @@ reach([FirstState | RestStates], End, Names, BigList, {NumSent, NumRecd}, SendLi
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-	    reach(RestStates, End, Names, bloom:add(FirstState,BigList), 
+	    reach(RestStates, End, Names, addElemToHashTable(FirstState, HashTable), 
 		  {NumSent, NumRecd}, NewStates ++ SendList,Count+1) 
     end;
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
+reach([], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
     NewNumSent = NumSent + sendStates(SendList, Names),
     TableSize = Count, 
     Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, 0, []),
@@ -587,8 +637,8 @@ reach([], End, Names, BigList, {NumSent, NumRecd}, SendList, Count) ->
 	    done;
        true ->
 	    {NewQ, NewNumRecd} = Ret,
-	    reach(NewQ, End, Names, BigList, {NewNumSent, NewNumRecd}, [],Count)
-    end.
+	    reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd}, [],Count)
+     end.
 
 %%----------------------------------------------------------------------
 %% Function: dictToList/1
@@ -801,6 +851,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.30  2009/08/22 18:17:20  depaulfm
+% Abstracted away how the hash table is implemented
+%
 % Revision 1.29  2009/08/22 17:34:14  depaulfm
 % Finished abstracting state caching; Modified state caching to store only the 32-bit hashed value of states; added EXIT handler routine together w/ process_flag to trap on exit; code cleanup
 %
