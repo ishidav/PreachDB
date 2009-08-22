@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-#CVS: $Id: ptest,v 1.3 2009/08/19 05:10:18 depaulfm Exp $
+#CVS: $Id: ptest,v 1.4 2009/08/22 20:01:40 depaulfm Exp $
 
 # LICENSE AGREEMENT
 #
@@ -130,7 +130,7 @@ sub postProcess{
 	while(<$FH>){
 	    $line = $_;
 	    if ($line !~ /warning/i) {
-		if ($line =~/(variable.*[unbound|unsafe])|error|undefined/i){
+		if ($line =~/(variable.*[unbound|unsafe])|error|undefined|illegal/i){
 		    print "##############################################################\n";
 		    die   "ptest: Erlang compilation error... Exiting\n";
 		}
@@ -155,16 +155,16 @@ sub usage{
   print "###########################################\n";
   print "ptest: $msg\n\n";
   print "usage: ptest --resdir=DIRA --beamdir=DIRB --module=MODULE --nnodes=NN";
-  print " --statecaching --mprofile --log --local\n\n";
+  print " --statecaching --mprofile --local\n\n";
   print "where\n";
   print " resdir     is a directory in which results will be saved ";
-  print "(default: RESULTS)\n";
+  print "(default: RESULTS) (CURRENTLY HAS NO EFFECT)\n";
   print " beamdir    is a directory where erlang 'beam' files are located ";
   print "(default: ebin)\n";
   print " module     is the name of the module being model-checked      (REQUIRED)\n";
   print " nnodes     is the number of nodes to use                      (CURRENTLY HAS NO EFFECT)\n";
   print " statecaching defines whether to use per-node state-caching\n";
-  print " local        defines to use model-check locally\n";
+  print " local        defines to run PReach locally\n";
   print " mprofile     enables memory and cpu profiling                  (CURRENTLY HAS NO EFFECT)\n";
   exit;
 }
