@@ -627,10 +627,6 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
-    case isMemberHashTable(FirstState,HashTable) of 
-	true ->
-	    reach(RestStates, End, Names, HashTable, {NumSent, NumRecd}, SendList, Count);
-	false ->
 	    %profiling(length(RestStates), length(SendList), NumSent, NumRecd, Count),
 	    profiling(0, 0, NumSent, NumRecd, Count),
 	    CurState = decompressState(FirstState),
@@ -642,15 +638,14 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd}, Send
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-	    reach(RestStates, End, Names, addElemToHashTable(FirstState, HashTable), 
-		  {NumSent, NumRecd}, NewStates ++ SendList,Count+1) 
-    end;
+	    reach(RestStates, End, Names, HashTable, 
+		  {NumSent, NumRecd}, NewStates ++ SendList,Count+1);
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
     NewNumSent = NumSent + sendStates(SendList, Names),
     TableSize = Count, 
-    Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, 0, []),
+    Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, HashTable, []),
     if Ret == done ->
 	    done;
        true ->
@@ -723,7 +718,7 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count) ->
 %%		OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
-checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
+checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates) ->
     IsRoot = rootPID(Names) == self(),
     Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
     receive
@@ -731,8 +726,16 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 	    exitHandler(Pid,Reason);
 
 	{State, state} ->
-	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},0,
-			  [State|NewStates]);
+	    case isMemberHashTable(State,HashTable) of 
+		true ->
+		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
+				  NewStates);
+		false ->
+		    addElemToHashTable(State, HashTable),
+		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
+				  [State|NewStates])
+	    end;
+		    
 
 	pause -> % report # messages sent/received
 	    rootPID(Names) ! {NumSent, NumRecd, poll},
@@ -742,7 +745,7 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 
 		resume ->
 		    checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd},
-				  0, NewStates);
+				  HashTable, NewStates);
 		die ->
 		    terminateMe(BigListSize, rootPID(Names))
 	    end;
@@ -768,13 +771,13 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, _, NewStates) ->
 			      "again for timeout...~n", [self(),CheckSum]),
 		    resumeWorkers(tl(dictToList(Names))),
 		    checkMessageQ(timeout, BigListSize, Names, {NumSent,NumRecd}, 
-				  0, NewStates)
+				  HashTable, NewStates)
 	    end
     end;
 
 
 % Get all queued messages without waiting
-checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewStates) ->
+checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates) ->
     receive
 	{'EXIT', Pid, Reason } ->
 	    exitHandler(Pid,Reason);
@@ -782,8 +785,15 @@ checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, Depth, NewState
 	% could check for pause messages here
 
 	{State, state} ->
-	    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
-			  Depth+1, [State|NewStates]);
+	    case isMemberHashTable(State,HashTable) of 
+		true ->
+		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
+				  HashTable, NewStates);
+		false ->
+		    addElemToHashTable(State, HashTable),
+		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
+				  HashTable, [State|NewStates])
+	    end;
 
 	die -> 
 	    terminateMe(BigListSize, rootPID(Names))
@@ -869,6 +879,9 @@ terminateAll(PIDs) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.32  2009/08/24 18:22:28  depaulfm
+% Moved hash table membership and insertion to checkMessageQ to reflect Stern and Dill's algorithm
+%
 % Revision 1.31  2009/08/22 19:52:00  depaulfm
 % By adding the exit handler I introduced a bug in waitForTerm; I re-wrote waitForTerm so that it properly handles EXIT messages from workers
 %
