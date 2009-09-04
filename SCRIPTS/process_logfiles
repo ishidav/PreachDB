@@ -1,0 +1,184 @@
+#!/usr/bin/env perl
+
+use warnings;
+
+use Getopt::Long;
+use Pod::Usage;
+use File::Basename;
+use Switch;
+use lib "$ENV{'PREACH_PATH'}/SCRIPTS/MyFileHandlers";
+
+
+use MyFileHandlers;
+
+#
+# Process Input Params
+#
+my $help   = 0;        # option variable with default value (false)
+my $indir  = '';       # option variable for input directory where srcs reside
+my $oudir  = '';       # option variable for output directory where target reside
+my $logfile= '';       # variable containg the name of the log file
+
+GetOptions ('help|?'   => \$help, 
+	    'indir=s'  => \$indir, 
+	    'oudir=s'  => \$oudir,
+	    'logfile=s' => \$logfile);
+pod2usage(-exitval => 0, -verbose => 2) if ($help);
+
+#
+# Global variables
+#
+my $obj = new MyFileHandlers;
+
+#
+# Create absolute path and check that it exists
+#
+my $currdir = $obj->MFHcurdir;
+my $srcdir = $obj->MFHconcatdir($currdir,$indir);
+my $outdir = $obj->MFHconcatdir2($currdir,$oudir);
+
+#
+# Create a list  bench files
+#
+$obj->MFHfind($srcdir,$logfile);
+my @benches = $obj->MFHlistoffiles;
+
+#
+print "file=$benches[0]\n";
+
+generateGnuplotFiles(\@benches);
+die;
+
+
+
+#########################################################
+# SUBROUTINES
+#########################################################
+
+sub generateGnuplotFiles{
+    my $file_ptr = shift;
+    $obj->MFHreadfile(@$file_ptr[0]);
+    my @file_bare_bones = $obj->MFHfile;
+
+    my @pids;
+    my @VS;
+    my @NS;
+    my @NR;
+    my @MS;
+    my @MP;
+    my @Q;
+    my %pidTable;
+    my $FH;
+    my @allfiles = ();
+    my $overallavg = 0;
+
+    #
+    # Register all PIDs
+    #
+    my $count = `cat hosts| grep "\." | wc -l`;
+    print "count is $count";
+
+    my $i = 0;
+    my $linenumber = 1;
+    my @size;
+    while($i<$count && ($linenumber < $#file_bare_bones)){
+	if($file_bare_bones[$linenumber] =~ /with PID (<[0-9]+\.[0-9]+\.[0-9]+>)/){
+	    push @pids, $+;
+	    $i = $i + 1;
+	}
+	$linenumber = $linenumber + 1;
+    }
+    push @pids, '<0.1.0>';
+    foreach $pid (@pids) {
+	print "pid=$pid\n";
+    }
+
+    #
+    # Collect all data for each pid
+    #     
+    foreach $pid (@pids){
+	for($linenumber = 1; $linenumber < $#file_bare_bones; $linenumber = $linenumber + 1){
+	    if($file_bare_bones[$linenumber] =~ /VS=([0-9]+),\s+NS=([0-9]+),\s+NR=([0-9]+)\s+\|MemSys\|=([0-9.]+) MB,\s+\|MemProc\|=([0-9.]+) MB\s+\|Q\|=([0-9]+)->$pid/){
+		push @VS, $1;
+		push @NS, $2;
+		push @NR, $3;
+		push @MS, $4;
+		push @MP, $5;
+		push @Q,  $6;
+		#print "entry $file_bare_bones[$linenumber] $+\n";
+		#if($linenumber>=200) {die};
+	    }
+	}
+	print "Collected data on pid=$pid: Found " . ($#VS+1) . " Entries\n";
+	$filename = $outdir . "/";
+	$filename .= $pid;
+	$filename =~ s/<//;
+	$filename =~ s/>//;
+	$filename =~ s/\./_/;
+	push @allfiles, $filename;
+	print "Writing to $filename\n";
+	open FILE ,">$filename" or die "Could not write to file $filename\n";
+	for(my $k= 0; $k <= $#VS; $k = $k+1){
+	    print FILE "$VS[$k] $NS[$k] $NR[$k] $MS[$k] $MP[$k] $Q[$k]\n";
+	}
+	#### START : This stats needs to be fixed
+	#$avgsize =0;
+	#$count = 0;
+	#foreach $q (@Q){
+	#    $avgsize = $avgsize + $q;
+	#    $count = $count + 1;
+	#}
+	#$avgsize = $avgsize / $count;
+	#$overallavg = $overallavg + $avgsize;
+	#print "$pid queue avg size = $avgsize\n";
+	#### END:  This stats needs to be fixed
+	close FILE or die $!;
+	@VS = ();
+	@NS = ();
+	@NR = ();;
+	@MS = ();
+	@MP = ();
+	@Q = ();
+    }
+    #### START : This stats needs to be fixed
+    #print "Overall avg = " . $overallavg/8;
+    #### END:  This stats needs to be fixed
+
+    ######
+    ###### Write out gnuplot commands
+    ######
+    my $problem = $logfile;
+    $problem =~ s/\.log//;
+    open FILE ,">$oudir/ERTS_QueueSize.gp" or die "Could not write to file $filename\n";
+    print FILE "set xlabel \"Number of visited states\"\n";
+    print FILE "set ylabel \"Number of Queued States\"\n";
+    print FILE "set title \"$problem: ERTS Queue Size\"\n";
+    print FILE "plot ";
+    $count = 1;
+    $matching = "\/.*$oudir\/";
+    for (my $i =0 ; $i < $#allfiles; $i = $i + 1){
+	$allfiles[$i] =~ s/$matching//;
+	print FILE "\"$allfiles[$i]\" using 1:6 w linespoints title \"node$count\",";
+	$count = $count + 1;
+    }
+    $allfiles[$i] =~ s/$matching//;
+    print FILE "\"$allfiles[$i]\" using 1:6 w linespoints title \"node$count\"";
+    close FILE or die $!;
+
+    
+    open FILE ,">$oudir/ERTS_TotalMemSize.gp" or die "Could not write to file $filename\n";
+    print FILE "set xlabel \"Number of visited states\"\n";
+    print FILE "set ylabel \"Number of MegaBytes\"\n";
+    print FILE "set title \"$problem: Total Memory Allocated (erts + process)\"\n";
+    print FILE "plot ";
+    $count = 1;
+    for (my $i =0 ; $i < $#allfiles; $i = $i + 1){
+	$allfiles[$i] =~ s/$matching//;
+	print FILE "\"$allfiles[$i]\" using 1:(\$4+\$5) w linespoints title \"node$count\",";
+	$count = $count + 1;
+    }
+    $allfiles[$i] =~ s/$matching//;
+    print FILE "\"$allfiles[$i]\" using 1:(\$4+\$5) w linespoints title \"node$count\"";
+    close FILE or die $!;
+
+}
