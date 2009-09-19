@@ -238,19 +238,26 @@ read_inFile(InFile,HostList,SLine) ->
 slaves(_Hostlist, _CWD, 1) -> 
     ok;
 slaves([Host|Hosts], CWD, NHosts) ->
-    Args0 = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
+    Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
 	" -pa " ++ CWD ++ " -pa " ++ CWD ++ "/ebin " ++  "-smp enable",
     
-  % Pass cache option to workers 
+    % Pass cache option to workers 
     IsCaching = isCaching(),
     if IsCaching -> 
-	    Args = Args0 ++ " -statecaching"; 
+	    Args0 = Args ++ " -statecaching"; 
        true -> 
-	    Args = Args0 
+	    Args0 = Args 
     end,
-    
+    % Pass external profile option to workers
+    IsExtProfile = isExtProfiling(),
+    if IsExtProfile -> 
+	    Args1 = Args0 ++ " -nprofile"; 
+       true -> 
+	    Args1 = Args0 
+    end,
+
     NodeName = string:concat("pruser", integer_to_list(NHosts)),
-    case slave:start_link(Host, NodeName, Args) of
+    case slave:start_link(Host, NodeName, Args1) of
 	{ok, Node} ->
 	    io:format("Erlang node started = [~p]~n", [Node]),
 	    slaves(Hosts, CWD, NHosts - 1);
@@ -332,6 +339,8 @@ setup() ->
 	    end
         end,
     {Names, Nhosts}.
+   
+
 
 %%----------------------------------------------------------------------
 %% Function: start/3
@@ -343,10 +352,15 @@ setup() ->
 %%     
 %%----------------------------------------------------------------------
 start() ->
-    T0 = now(),
     {Names, P} = setup(), 
-    createStateCache(isCaching()),
+    startExternalProfiling(isExtProfiling()),
 
+    createStateCache(isCaching()),
+    Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
+    barrier(Others, lists:zip(Others, 
+			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
+
+    T0 = now(),      
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
     HashTable = createHashTable(),
@@ -376,7 +390,6 @@ start() ->
     end,
     io:format("----------~n"),
     done.	
-
 
 
 %%----------------------------------------------------------------------
@@ -598,10 +611,14 @@ startWorker(End) ->
     receive
         {Names, names} -> do_nothing % dummy RHS
     end,
+    startExternalProfiling(isExtProfiling()),
     createStateCache(isCaching()),
 
     HashTable = createHashTable(),
 
+    % synchronizes w/ the root
+    rootPID(Names) ! {ready, self()},
+    
     reach([], End, Names,HashTable,{0,0},[],0),
     io:format("PID ~w: Worker is done~n", [self()]),
     
@@ -874,11 +891,66 @@ terminateAll(PIDs) ->
     lists:map(fun(PID) -> PID ! die end, PIDs),
     done.
 
+
+%%----------------------------------------------------------------------
+%% Function: barrier/2
+%% Purpose : It implements a simple barrier to synchronize all threads.
+%%           The caller iterates over a set of PIDs check-marking 
+%%          their corresponding entry in the Table
+%%           1 in the table means 'ready has been received; 0, otherwise
+%%           All threads are in sync once all entries are marked w/ 1 
+%% Args    : PIDs is a list of pids to be synchonized
+%%	     Table is a scoreboard to check-mark thread 'ready' signals
+%% Returns : ok or it timesout because it could not synchronize
+%%     
+%%----------------------------------------------------------------------
+barrier(PIDs, Table) ->
+receive
+    {ready, Pid} ->
+        io:format("barrier: Rx ready from ~w~n",[Pid]),
+        NewTable = lists:keyreplace(Pid,1,Table,{Pid,1}),
+        NewCount = lists:foldl(fun(X,Acc) -> Acc + element(2,X) end, 0, NewTable),
+        if NewCount < length(PIDs) ->
+                barrier(PIDs,NewTable);
+           true -> ok
+        end;
+
+    _Other ->
+
+        barrier(PIDs, Table)
+after 60000 ->
+        io:format("barrier: ERROR: Haven't got all ack after 60s... sending die"
+                  ++ " to ~w~n",[PIDs]),
+        lists:map(fun(X) -> X ! die end, PIDs)    ,
+        io:format("checkAck: ~w halting for now",[self()]),
+        halt()
+end.
+
+
+%%----------------------------------------------------------------------
+%% Function: startExternalProfiling/1
+%% Purpose : Implements a simple communication w/ ptest
+%%          to start the external profiling tools
+%% Args    : boolean
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+startExternalProfiling(IsExtProfiling) ->
+    case IsExtProfiling of 
+	true ->
+	    os:cmd("touch /tmp/.preach");
+	false->
+	    ok
+    end.  
+
 %--------------------------------------------------------------------------------
 %                             Revision History
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.33  2009/09/19 03:23:28  depaulfm
+% Implemented a barrier for PReach's initialization; Added hooks for the network profiling
+%
 % Revision 1.32  2009/08/24 18:22:28  depaulfm
 % Moved hash table membership and insertion to checkMessageQ to reflect Stern and Dill's algorithm
 %
