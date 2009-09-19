@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-#CVS: $Id: ptest,v 1.4 2009/08/22 20:01:40 depaulfm Exp $
+#CVS: $Id: ptest,v 1.5 2009/09/19 03:25:17 depaulfm Exp $
 
 # LICENSE AGREEMENT
 #
@@ -33,6 +33,16 @@ use Getopt::Long;
 use Pod::Usage;
 use File::Basename;
 use Switch;
+use Time::HiRes qw(sleep);
+use lib "$ENV{'PREACH_PATH'}/SCRIPTS/MyFileHandlers";
+
+
+use MyFileHandlers;
+
+#
+# Re-map Interrupts Handlers
+#
+$SIG{'INT'} = 'INT_handler'; # local interrupt handler
 
 #
 # Process Input Params
@@ -44,6 +54,7 @@ my $module    = undef;     # required var defining test module
 my $nnodes    = 1;         # required var defining # of nodes to run on 
 my $statecaching    = '';  # optional var choosing whether to cach states 
 my $mprofile  = undef;     # optional var choosing whether to mem profiling 
+my $nprofile  = undef;     # optional var choosing whether to network profiling 
 my $local     = '';        # optional var choosing whether to run locally
 
 
@@ -54,6 +65,7 @@ GetOptions ('help'    => \$help,
 	    'nnodes=i'  => \$nnodes, 
 	    'statecaching'  => \$statecaching, 
 	    'mprofile'  => \$mprofile,
+	    'nprofile'  => \$nprofile,
 	    'local'       => \$local
     ) or usage("ERROR: Invalid command option");
 
@@ -96,7 +108,26 @@ postProcess("compile", "emake.log");
 my $logfile = $module . ".log";
 my $erl_command;
 $erl_command = asmErlangCmd();
-system("$erl_command 2>&1| tee $logfile"); 
+if (!defined($nprofile)){
+    system("$erl_command 2>&1| tee $logfile"); 
+}else{
+    my @hosts = uniquifyHostsList();
+    my $pid;
+    print "ptest: Number of unique hosts is ". ($#hosts+1) . "\n";
+    for(my $i = 0; $i <= $#hosts; $i = $i + 1) {
+	#print "Spawning $hosts[$i]\n";
+	system("$ENV{PREACH_PATH}/SCRIPTS/networkMonitor --host=$hosts[$i]&");
+    }
+   # sleep(1);
+    do{
+	$barrier = `ps -eo pid,user,cmd | grep networkMonitor | grep $ENV{USER} | grep -v grep |wc -l`;
+	#print "barrier#=$barrier\n";
+	sleep(1);
+    }while($barrier < ($#hosts));
+    sleep(2);
+    system("$erl_command 2>&1| tee $logfile"); 
+
+}
 postProcess("run", $logfile);
 
 ####################################################
@@ -114,6 +145,7 @@ sub asmErlangCmd{
 
     if ($local)       {$erl_command .= "-localmode ";}
     if($statecaching) { $erl_command .= "-statecaching ";}
+    if($nprofile)     { $erl_command .= "-nprofile ";}
 
     return $erl_command;
 }
@@ -147,8 +179,49 @@ sub postProcess{
 	    }
 	}
     }
-} 
+}
 
+#
+#
+#
+sub uniquifyHostsList{
+    #
+    # Read 'hosts' file
+    #
+    my $obj = new MyFileHandlers;
+    my $currdir = $obj->MFHcurdir;
+    $obj->MFHfind($currdir,"hosts");
+    my @files = $obj->MFHlistoffiles;
+    $obj->MFHreadfile($files[0]);
+    my @hosts = $obj->MFHfile;
+
+    # Uniquify list of hosts
+    my @unique_hosts = ();
+    my $index = 0;
+
+    @sorted_hosts = sort { lc($a) cmp lc($b) } @hosts;
+       
+    $unique_hosts[0] = pop @sorted_hosts;
+    $unique_hosts[0] =~ s/\.\n//; 
+    foreach $host (@sorted_hosts) {
+	$host =~ s/\.\n//;
+	if ($unique_hosts[$index] ne $host){
+	    $index = $index + 1;
+	    $unique_hosts[$index] = $host;
+	}else{
+	    $unique_hosts[$index] = $host;
+	}
+    }
+    #for(my $i = 0; $i<=$#unique_hosts; $i = $i + 1){
+    #print "$unique_hosts[$i]\n";
+    #}
+    return @unique_hosts;
+
+}
+
+#
+#
+#
 sub usage{
   my $msg = shift;
 
@@ -166,5 +239,63 @@ sub usage{
   print " statecaching defines whether to use per-node state-caching\n";
   print " local        defines to run PReach locally\n";
   print " mprofile     enables memory and cpu profiling                  (CURRENTLY HAS NO EFFECT)\n";
+  print " nprofile     enables network profiileing using the 3rd-party tool vnstat\n";
   exit;
+}
+
+################################
+# Interrupt Handlers
+################################
+#
+# This code is intended when Ctrl-C is hit before erlang starts;
+# Erlang traps Ctrl-C hits afterwards in the same manner as in interactive mode
+# i.e., Ctrl-C should be followed by 'a' and 'enter' keystrokes (in this order)
+#
+sub INT_handler {
+    print "ptest:CTRL-C key hit...\nptest:Cleaning up and exiting ptest...\n";
+    my @hosts = uniquifyHostsList();
+    
+    my $process;
+    my @vnstat = ();
+    my @netprofiler = ();
+    my @beam   = ();
+    my @erlang = ();
+    my $erl;
+
+
+    #
+    # Collect and kill spawned processes in hosts
+    #
+    foreach $host (@hosts){
+	@vnstat = `ssh $host "ps -eo pid,comm,user | grep vnstat | grep $ENV{USER} | grep -v grep"`;
+	foreach $process (@vnstat){
+	    $process =~ s/(\s*[0-9]+)\s+.*/$1/;
+	    $process =~ s/\n//;
+	    push @netprofiler, $process;
+	    print "vprocess($host)= $process\n";
+	}
+	#if($#netprofiler>=0){
+	foreach $np (@netprofiler){
+	    print "Sending INT to <host,pid> = <$host, $np>\n";
+	    `ssh $host kill -s INT $np`;
+	}
+	@netprofiler = ();
+	@beam = `ssh $host "ps -eo pid,comm,user | grep beam.smp | grep $ENV{USER} | grep -v grep"`;
+	foreach $process (@beam){
+	    $process =~ s/(\s*[0-9]+)\s+.*/$1/;
+	    $process =~ s/\n//;
+	    push @erlang, $process;
+	    print "eprocess($host)= $process\n";
+	}
+	#if($#erlang>=0){
+	foreach $erl (@erlang){
+	    print "Sending KILL to <host,pid> = <$host, $erl>\n";
+	    `ssh $host kill -9 $erl`;
+	}
+	@erlang = ();
+	# Clean up temp files
+	`ssh $host rm -f /tmp/.preach /tmp/.preach_stat`;
+    }
+    exit(0);
+
 }
