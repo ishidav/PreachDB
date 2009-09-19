@@ -1,0 +1,8 @@
+#CVS :Id$
+This is a pre-compiled vnstat based on the source code v1.8
+
+It's called along w/ the config file vnstatrc from the networkMonitor script.
+
+Please, do not change these files unless you really know what you're doing.
+
+e-mail USER at cs dot ubc dot ca if you have questions.

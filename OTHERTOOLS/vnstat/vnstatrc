@@ -1,0 +1,114 @@
+# vnStat 1.8 config file
+##
+
+# location of the database directory
+DatabaseDir "/var/lib/vnstat"
+
+# locale (LC_ALL) ("-" = use system locale)
+Locale "-"
+
+# on which day should months change
+MonthRotate 1
+
+# date output formats for -d, -m, -t and -w
+# see 'man date' for control codes
+DayFormat    "%x"
+MonthFormat  "%b '%y"
+TopFormat    "%x"
+
+# characters used for visuals
+RXCharacter       "%"
+TXCharacter       ":"
+RXHourCharacter   "r"
+TXHourCharacter   "t"
+
+# how units are prefixed when traffic is shown
+# 0 = IEC standard prefixes (KiB/MiB/GiB/TiB)
+# 1 = old style binary prefixes (KB/MB/GB/TB)
+UnitMode 0
+
+# show average rate column (1 = enabled, 0 = disabled)
+ShowRate 1
+
+# used rate unit (0 = bytes, 1 = bits)
+RateUnit 1
+
+# default interface
+Interface "eth0"
+
+# maximum bandwidth (Mbit) for all interfaces, 0 = disable feature
+# (unless interface specific limit is given)
+MaxBandwidth 100
+
+# interface specific limits
+#  example 8Mbit limit for eth0 (remove # to activate):
+#MaxBWeth0 8
+
+# how many seconds should sampling for -tr take by default
+Sampletime 5
+
+# default query mode
+# 0 = normal, 1 = days, 2 = months, 3 = top10
+# 4 = dumpdb, 5 = short, 6 = weeks, 7 = hours
+QueryMode 0
+
+# filesystem disk space check (1 = enabled, 0 = disabled)
+CheckDiskSpace 1
+
+# database file locking (1 = enabled, 0 = disabled)
+UseFileLocking 1
+
+# how much the boot time can variate between updates (seconds)
+BootVariation 15
+
+# log days without traffic to daily list (1 = enabled, 0 = disabled)
+TrafficlessDays 1
+
+
+# vnstatd
+##
+
+# how often (in seconds) interface data is updated
+UpdateInterval 30
+
+# how often (in seconds) interface status changes are checked 5
+PollInterval 5
+
+# how often (in minutes) interface data is saved to file 5
+SaveInterval 5
+
+# enable / disable logging (0 = disabled, 1 = logfile, 2 = syslog)
+UseLogging 1
+
+# file used for logging if UseLogging is set to 1
+LogFile "/var/log/vnstat.log"
+
+# file used as daemon pid / lock file
+PidFile "/var/run/vnstat.pid"
+
+
+# vnstati
+##
+
+# title timestamp format
+HeaderFormat "%x %H:%M"
+
+# show hours with rate (1 = enabled, 0 = disabled)
+HourlyRate 1
+
+# transparent background (1 = enabled, 0 = disabled)
+TransparentBg 0
+
+# image colors
+CBackground     "FFFFFF"
+CEdge           "AEAEAE"
+CHeader         "606060"
+CHeaderTitle    "FFFFFF"
+CHeaderDate     "FFFFFF"
+CText           "000000"
+CLine           "B0B0B0"
+CLineL          "-"
+CRx             "92CF00"
+CTx             "606060"
+CRxD            "-"
+CTxD            "-"
