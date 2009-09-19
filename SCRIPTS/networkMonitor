@@ -1,0 +1,122 @@
+#!/usr/bin/env perl
+#CVS: $Id: networkMonitor,v 1.1 2009/09/19 02:46:56 depaulfm Exp $
+
+# LICENSE AGREEMENT
+#
+#  FileName                   [networkMonitor]
+#
+#  PackageName                [preach]
+#
+#  Synopsis                   [Wrapper script for network monitoring            ]
+#
+#  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+#
+#  Copyright                  [Copyright (C) 2009 University of British Columbia]
+# 
+#  This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+###############################################################################
+#
+#
+use 5.008;
+use warnings;
+use Getopt::Long;
+use Pod::Usage;	
+use File::Basename;
+use Switch;
+use Time::HiRes qw(sleep);
+use lib "$ENV{'PREACH_PATH'}/SCRIPTS/MyFileHandlers";
+
+use MyFileHandlers;
+
+#
+# Process Input Params
+#
+my $host    =	'';        # holds the host name
+
+
+GetOptions ('host=s'       => \$host
+    ) or usage("ERROR: Invalid command option");
+
+
+
+my @pids;
+my $pid_elem;
+my $pid;
+my @number;
+
+
+#
+# Wait for start comand from PReach 
+#
+my $start = '';
+print "\nnetworkMonitor: waiting $host\n";
+do {
+    $start = `ssh $host \"(ls /tmp/.preach) >& /tmp/.preach_stat ; cat /tmp/.preach_stat\"`;
+    #sleep(1);
+    sleep(0.8);
+    $start =~ s/\n//;
+}while($start ne "/tmp/.preach");
+
+
+#
+# Start monitoring  
+#
+print "\nnetworkMonitor: starting $host\n";
+
+# Log and cmd for loopback iface
+my $lo     =  $host . ".lo"; 
+my $locmd  = " $ENV{PREACH_PATH}/OTHERTOOLS/vnstat/vnstat -l -i lo ";
+$locmd    .= "--config $ENV{PREACH_PATH}/OTHERTOOLS/vnstat/vnstatrc ";
+# Log and cmd for eth0 iface
+my $eth0     = $host . ".eth0";
+my $eth0cmd  = " $ENV{PREACH_PATH}/OTHERTOOLS/vnstat/vnstat -l -i eth0 ";
+$eth0cmd    .= "--config $ENV{PREACH_PATH}/OTHERTOOLS/vnstat/vnstatrc "; 
+# Issue the actual monitocmds
+system("ssh $host \"$locmd >&$ENV{PWD}/$lo&; $eth0cmd >&$ENV{PWD}/$eth0&\"");
+
+
+# Collect vnstat pids for clean-up
+sleep(1); # Just give a bit of time before collectin the pids
+my @pid_list  = `ssh $host "ps -eo pid,cmd | grep vnstat | grep -v grep | grep -v ssh "`;
+foreach $pid_elem (@pid_list){
+    @number = split(' ', $pid_elem);
+    push @pids, $number[0];
+} 
+
+#
+# Stop monitoring
+# 
+my $init = 1;
+my $stop = '';
+do {
+    $stop = `ssh $host "ps -eo comm,user | grep beam.smp | grep $ENV{USER} | grep -v grep"`;
+    #sleep(1);
+    if ($stop ne '') { $init = 0;}
+}while($stop ne '' || $init);
+
+print "\nnetworkMonitor: stopping $host\n";
+foreach $pid (@pids){ 
+    print "\nnetworkMonitor:: host($host) Sending INT to vnstat's pid $pid\n"; 
+    `ssh $host kill -s INT $pid`;
+};
+
+#
+# Clean up
+#
+print "\nnetworkMonitor: host($host) Cleaning up before exit... Be patient...\n";
+print "networkMonitor: host($host) Removing /tmp/.preach*\n";
+`ssh $host rm -f /tmp/.preach /tmp/.preach_stat`;
+print "networkMonitor: host($host) Cleaning-up done... Good-bye!\n";
+
