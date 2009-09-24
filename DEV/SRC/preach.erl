@@ -31,8 +31,17 @@
 % gospel code
 %
 
+
 %% configuration-type functions
 timeoutTime() -> 3000.
+
+isLoadBalancing() -> false.
+
+balanceFrequency() -> 10000.
+
+balanceRatio() -> 16. % Might want to set this to be the number of threads (length(Names)?), but I'm too lazy
+
+balanceTolerence() -> 10000.
 
 %%----------------------------------------------------------------------
 %% Function: createHashTable/1
@@ -365,7 +374,7 @@ start() ->
     NumSent = length(startstates()),
     HashTable = createHashTable(),
 
-    reach([], null, Names,HashTable,{NumSent,0},[], 0), %should remove null param
+    reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
     
     io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
     %{NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
@@ -385,6 +394,12 @@ start() ->
     if IsCaching ->
 	    io:format("\tTotal of ~w state-cache hits (average of ~w)~n", 
 		      [NumHits, trunc(NumHits/P)]);
+       true ->
+	    ok
+    end,
+    IsLB = isLoadBalancing(),
+    if IsLB ->
+	    io:format("\tLoad balancing enabled~n");
        true ->
 	    ok
     end,
@@ -528,6 +543,18 @@ sendStates(States, Names) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
+
+
+
+sendExtraStates(_OtherPID, Rest, 0) ->
+	Rest;
+
+sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
+%	io:format("PID ~w: inside sendExtraStates~n", [self()]),
+	OtherPID ! {First, extraState},
+	sendExtraStates(OtherPID, Rest, NumToSend-1).
+
+
 sendStates(caching, [], _Names, NumSent) ->
     NumSent;
 
@@ -616,10 +643,16 @@ startWorker(End) ->
 
     HashTable = createHashTable(),
 
+%<<<<<<< preach.erl
+%   reach([], End, Names,HashTable,{0,0},[],0,0),
+%=======
     % synchronizes w/ the root
     rootPID(Names) ! {ready, self()},
     
-    reach([], End, Names,HashTable,{0,0},[],0),
+%    reach([], End, Names,HashTable,{0,0},[],0),
+	 reach([], End, Names, HashTable, {0,0},[],0,0),
+%>>>>>>> 1.33
+
     io:format("PID ~w: Worker is done~n", [self()]),
     
     deleteStateCache(isCaching()),
@@ -643,32 +676,61 @@ startWorker(End) ->
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
-	    %profiling(length(RestStates), length(SendList), NumSent, NumRecd, Count),
-	    profiling(0, 0, NumSent, NumRecd, Count),
+reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewStateList, Count, QLen) ->
+	    BalFreq = balanceFrequency(),
+		IsLB = isLoadBalancing(),
+		if IsLB and ((Count rem BalFreq) == 4000)  ->
+			sendQSize(Names, dict:size(Names), QLen, RestStates, {NumSent,NumRecd});
+		true -> do_nothing
+		end, 
+
+		profiling(0, 0, NumSent, NumRecd, Count, QLen),
 	    CurState = decompressState(FirstState),
 	    NewStates = transition(CurState),
+
+		ThisNumSent = sendStates(NewStates, Names),
+	%	io:format("An out-degree of::~w~n", [ThisNumSent]),
+		%ThisNumSent = 0,
+
 	    EndFound = stateMatch(CurState,End),
-	    
 	    if EndFound ->
 		    io:format("=== End state ~w found by PID ~w ===~n", [End,self()]),
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-	    reach(RestStates, End, Names, HashTable, 
-		  {NumSent, NumRecd}, NewStates ++ SendList,Count+1);
+		Ret = checkMessageQ(notimeout,Count, Names, {NumSent+ThisNumSent, NumRecd}, HashTable, [],0, {RestStates, QLen-1} ),
+ 	    if Ret == done ->
+			done;
+		true -> {NewQ, NewNumRecd, NewQLen} = Ret,
+			reach(NewQ, End, Names, HashTable, 
+			{NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
+		end;
+	%	reach(RestStates, End, Names, HashTable, {NumSent+ThisNumSent, NumRecd}, NewStates++NewStateList, Count+1);
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, HashTable, {NumSent, NumRecd}, SendList, Count) ->
-    NewNumSent = NumSent + sendStates(SendList, Names),
-    TableSize = Count, 
-    Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, HashTable, []),
+reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
+    NewNumSent = NumSent, % + sendStates(NewStates,Names),
+	TableSize = Count, 
+    Ret = checkMessageQ(timeout, TableSize, Names, {NewNumSent, NumRecd}, HashTable, [],0, {[],0}),
     if Ret == done ->
 	    done;
        true ->
-	    {NewQ, NewNumRecd} = Ret,
-	    reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd}, [],Count)
+	    {NewQ, NewNumRecd, NumStates} = Ret,
+	    reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
      end.
+
+
+sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
+
+sendQSize(Names, Index, QSize, StateQ, {NumSent, NumRecd}) ->
+	Owner = dict:fetch(Index, Names),
+	if Owner /= self() ->
+	%	io:format("PID ~w: Reporting a QSize of ~w~n",[self(),NewQSize]),
+		Owner ! {QSize, self(), myQSize},
+		sendQSize(Names, Index-1, QSize,StateQ,{NumSent,NumRecd});
+	true -> do_nothing
+	end,
+	sendQSize(Names, Index-1, QSize,StateQ,{NumSent,NumRecd}).
 
 %%----------------------------------------------------------------------
 %% Function: dictToList/1
@@ -698,19 +760,29 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 %%
 %% Returns : 
 %%     
-%%----------------------------------------------------------------------
-profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count) ->
+%%---------------------------------------------------------------------
+profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
     if (Count rem 10000)  == 0 -> 
 %	    io:format("VS=~w, |WQ|=~w, |SQ|=~w, NS=~w, NR=~w" ++ 
 %		      " |MemSys|=~w, |MemProc|=~w ->~w~n", 
 %		      [Count, WQsize, SendQsize, NumSent, NumRecd,
 %		       erlang:memory(system), erlang:memory(processes),self()]);
-	    io:fwrite("VS=~w,  NS=~w, NR=~w" ++ 
-		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB |Q|=~w->~w~n", 
+%	    io:fwrite("VS=~w,  NS=~w, NR=~w" ++ 
+%		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB |InQ|=~w, |StateQ|=~w->~w~n", 
+%		      [Count, NumSent, NumRecd,
+%		       erlang:memory(system)/1048576, 
+%		       erlang:memory(processes)/1048576, 
+%		       element(2,process_info(self(),message_queue_len)), 
+%				QLen,
+%		       self()]),
+
+	    io:format("VS=~w,  NS=~w, NR=~w" ++ 
+		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB |InQ|=~w, |StateQ|=~w->~w~n", 
 		      [Count, NumSent, NumRecd,
 		       erlang:memory(system)/1048576, 
 		       erlang:memory(processes)/1048576, 
 		       element(2,process_info(self(),message_queue_len)), 
+				QLen,
 		       self()]);
 
        true -> ok
@@ -735,7 +807,7 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count) ->
 %%		OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
-checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates) ->
+checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates,NumStates, {CurQ, CurQLen}) ->
     IsRoot = rootPID(Names) == self(),
     Timeout = if IsRoot -> timeoutTime(); true -> infinity end,
     receive
@@ -746,13 +818,32 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewSta
 	    case isMemberHashTable(State,HashTable) of 
 		true ->
 		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
-				  NewStates);
+				  NewStates, NumStates,{CurQ, CurQLen});
 		false ->
 		    addElemToHashTable(State, HashTable),
 		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
-				  [State|NewStates])
+				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
 	    end;
-		    
+
+	{State, extraState} ->
+			checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd},HashTable,
+				  [State|NewStates], NumStates+1,{CurQ,CurQLen});
+
+
+	{OtherSize, OtherPID, myQSize} ->
+		LB = OtherSize + balanceTolerence(),
+		{NewQ, NewQLen} = if CurQLen > LB ->
+			io:format("PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", [self(),CurQLen,OtherSize, 
+																							(CurQLen-OtherSize) div balanceRatio(), 
+																							OtherPID]),
+			T1 = sendExtraStates(OtherPID, CurQ, (CurQLen - OtherSize) div balanceRatio()),
+			T2 = CurQLen - ((CurQLen - OtherSize) div balanceRatio()),
+			{T1,T2};
+		true -> {CurQ,CurQLen}
+		end,
+				checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd},HashTable,
+				  NewStates, NumStates, {NewQ,NewQLen});
+	
 
 	pause -> % report # messages sent/received
 	    rootPID(Names) ! {NumSent, NumRecd, poll},
@@ -762,7 +853,7 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewSta
 
 		resume ->
 		    checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd},
-				  HashTable, NewStates);
+				  HashTable, NewStates, NumStates,{CurQ,CurQLen});
 		die ->
 		    terminateMe(BigListSize, rootPID(Names))
 	    end;
@@ -788,13 +879,13 @@ checkMessageQ(timeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewSta
 			      "again for timeout...~n", [self(),CheckSum]),
 		    resumeWorkers(tl(dictToList(Names))),
 		    checkMessageQ(timeout, BigListSize, Names, {NumSent,NumRecd}, 
-				  HashTable, NewStates)
+				  HashTable, NewStates,NumStates, {CurQ,CurQLen})
 	    end
     end;
 
 
 % Get all queued messages without waiting
-checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates) ->
+checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates,{CurQ, CurQLen}) ->
     receive
 	{'EXIT', Pid, Reason } ->
 	    exitHandler(Pid,Reason);
@@ -805,19 +896,40 @@ checkMessageQ(notimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	    case isMemberHashTable(State,HashTable) of 
 		true ->
 		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
-				  HashTable, NewStates);
+				  HashTable, NewStates, NumStates, {CurQ,CurQLen});
 		false ->
 		    addElemToHashTable(State, HashTable),
 		    checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd+1},
-				  HashTable, [State|NewStates])
+				  HashTable, [State|NewStates],NumStates+1,{CurQ,CurQLen})
 	    end;
+
+	{State, extraState} ->
+			checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd},HashTable,
+				  [State|NewStates],NumStates+1, {CurQ,CurQLen});
+
+
+	{OtherSize, OtherPID, myQSize} ->
+		LB = OtherSize + balanceTolerence(),
+		{NewQ, NewQLen} = if CurQLen > LB ->
+	io:format("PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", [self(),CurQLen,OtherSize, 
+																					(CurQLen-OtherSize) div balanceRatio(), 
+																					OtherPID]),
+
+			T1 = sendExtraStates(OtherPID, CurQ, (CurQLen - OtherSize) div balanceRatio()),
+			T2 = CurQLen - ((CurQLen - OtherSize) div balanceRatio()),
+			{T1,T2};
+		true -> {CurQ,CurQLen}
+		end,
+				checkMessageQ(notimeout,BigListSize,Names,{NumSent, NumRecd},HashTable,
+				  NewStates, NumStates, {NewQ,NewQLen});
+
 
 	die -> 
 	    terminateMe(BigListSize, rootPID(Names))
 
     after 
 	0 -> % wait for 0 ms  
-	    {NewStates, NumRecd} 
+	    {NewStates ++ CurQ, NumRecd, CurQLen+NumStates} 
     end.
 
 %%----------------------------------------------------------------------
@@ -948,6 +1060,9 @@ startExternalProfiling(IsExtProfiling) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.34  2009/09/24 00:29:02  binghamb
+% Implemented Kumar and Mercer-esq load balancing scheme. Enable/Disable by setting function isLoadBalancing() true or false, and other load balancing parameters. Also changed the model checking algorithm to a tighter recurrence of expand/send/receive to facilitate load balancing and a strong sense of what an iteration is.
+%
 % Revision 1.33  2009/09/19 03:23:28  depaulfm
 % Implemented a barrier for PReach's initialization; Added hooks for the network profiling
 %
