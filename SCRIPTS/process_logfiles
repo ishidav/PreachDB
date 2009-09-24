@@ -47,7 +47,6 @@ my @benches = $obj->MFHlistoffiles;
 print "file=$benches[0]\n";
 
 generateGnuplotFiles(\@benches);
-die;
 
 
 
@@ -67,6 +66,7 @@ sub generateGnuplotFiles{
     my @MS;
     my @MP;
     my @Q;
+	my @SQ;
     my %pidTable;
     my $FH;
     my @allfiles = ();
@@ -98,13 +98,14 @@ sub generateGnuplotFiles{
     #     
     foreach $pid (@pids){
 	for($linenumber = 1; $linenumber < $#file_bare_bones; $linenumber = $linenumber + 1){
-	    if($file_bare_bones[$linenumber] =~ /VS=([0-9]+),\s+NS=([0-9]+),\s+NR=([0-9]+)\s+\|MemSys\|=([0-9.]+) MB,\s+\|MemProc\|=([0-9.]+) MB\s+\|Q\|=([0-9]+)->$pid/){
+	    if($file_bare_bones[$linenumber] =~ /VS=([0-9]+),\s+NS=([0-9]+),\s+NR=([0-9]+)\s+\|MemSys\|=([0-9.]+) MB,\s+\|MemProc\|=([0-9.]+) MB\s+\|InQ\|=([0-9]+),\s+\|StateQ\|=([0-9.]+)->$pid/){
 		push @VS, $1;
 		push @NS, $2;
 		push @NR, $3;
 		push @MS, $4;
 		push @MP, $5;
 		push @Q,  $6;
+		push @SQ, $7;
 		#print "entry $file_bare_bones[$linenumber] $+\n";
 		#if($linenumber>=200) {die};
 	    }
@@ -119,7 +120,7 @@ sub generateGnuplotFiles{
 	print "Writing to $filename\n";
 	open FILE ,">$filename" or die "Could not write to file $filename\n";
 	for(my $k= 0; $k <= $#VS; $k = $k+1){
-	    print FILE "$VS[$k] $NS[$k] $NR[$k] $MS[$k] $MP[$k] $Q[$k]\n";
+	    print FILE "$VS[$k] $NS[$k] $NR[$k] $MS[$k] $MP[$k] $Q[$k] $SQ[$k]\n";
 	}
 	#### START : This stats needs to be fixed
 	#$avgsize =0;
@@ -139,6 +140,7 @@ sub generateGnuplotFiles{
 	@MS = ();
 	@MP = ();
 	@Q = ();
+	@SQ = ();
     }
     #### START : This stats needs to be fixed
     #print "Overall avg = " . $overallavg/8;
@@ -179,6 +181,21 @@ sub generateGnuplotFiles{
     }
     $allfiles[$i] =~ s/$matching//;
     print FILE "\"$allfiles[$i]\" using 1:(\$4+\$5) w linespoints title \"node$count\"";
+    close FILE or die $!;
+
+    open FILE ,">$oudir/StateQueueSize.gp" or die "Could not write to file $filename\n";
+    print FILE "set xlabel \"Number of visited states\"\n";
+    print FILE "set ylabel \"Number of Queued States\"\n";
+    print FILE "set title \"$problem: Size of State Queue\"\n";
+    print FILE "plot ";
+    $count = 1;
+    for (my $i =0 ; $i < $#allfiles; $i = $i + 1){
+	$allfiles[$i] =~ s/$matching//;
+	print FILE "\"$allfiles[$i]\" using 1:7 w linespoints title \"node$count\",";
+	$count = $count + 1;
+    }
+    $allfiles[$i] =~ s/$matching//;
+    print FILE "\"$allfiles[$i]\" using 1:7 w linespoints title \"node$count\"";
     close FILE or die $!;
 
 }
