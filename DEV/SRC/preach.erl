@@ -35,13 +35,16 @@
 %% configuration-type functions
 timeoutTime() -> 3000.
 
+%% these are load balancing parameters. Still in experimental stage,
+%% will eventually be moved to preach.hrl or integrated into ptest.
 isLoadBalancing() -> false.
 
-balanceFrequency() -> 10000.
+balanceFrequency() -> 10000. %10000 div 8.
 
-balanceRatio() -> 4. % Might want to set this to be the number of threads (length(Names)?), but I'm too lazy
+% Might want to set this to be the number of threads (length(Names)?)
+balanceRatio() -> 8.
 
-balanceTolerence() -> 10000.
+balanceTolerence() -> 10000 div 8.
 
 %%----------------------------------------------------------------------
 %% Function: createHashTable/1
@@ -315,7 +318,7 @@ hashState2Int(State) ->
 rootPID(Names) -> dict:fetch(1,Names).  
 
 %%----------------------------------------------------------------------
-%% Function: setup/
+%% Function: setup/0
 %% Purpose : Automatically start the distributed erts, or statrt locally
 %%           if in local mode
 %%           
@@ -371,6 +374,7 @@ start() ->
 			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
 
     T0 = now(),      
+
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
     HashTable = createHashTable(),
@@ -402,7 +406,7 @@ start() ->
     if IsLB ->
 	    io:format("\tLoad balancing enabled~n");
        true ->
-	    ok
+	    io:format("\tLoad balancing disabled~n")
     end,
     io:format("----------~n"),
     done.	
@@ -532,6 +536,7 @@ sendStates(States, Names) ->
 	    sendStates(nocaching, States, Names, 0)
     end.
    
+
 %%----------------------------------------------------------------------
 %% Function: sendStates/4 (State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
@@ -544,18 +549,6 @@ sendStates(States, Names) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-
-
-
-sendExtraStates(_OtherPID, Rest, 0) ->
-	Rest;
-
-sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
-%	io:format("PID ~w: inside sendExtraStates~n", [self()]),
-	OtherPID ! {First, extraState},
-	sendExtraStates(OtherPID, Rest, NumToSend-1).
-
-
 sendStates(caching, [], _Names, NumSent) ->
     NumSent;
 
@@ -597,6 +590,26 @@ sendStates(nocaching, [First | Rest], Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     Owner ! {compressState(First), state},
     sendStates(nocaching, Rest, Names, NumSent + 1).
+
+%%----------------------------------------------------------------------
+%% Function: sendExtraStates/3 
+%% Purpose : Redirects owned states to other threads for expansion.
+%%				Used for load balancing. Such states are reffered to
+%%				as "extra states".
+%%              
+%% Args    : OtherPID is the PID of the thread to send states to
+%%			 First is the current state to send
+%%           Rest are the rest of the states to send
+%%           NumToSend is the length of Rest 
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+sendExtraStates(_OtherPID, Rest, 0) ->
+	Rest;
+
+sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
+	OtherPID ! {First, extraState},
+	sendExtraStates(OtherPID, Rest, NumToSend-1).
 
 
 %%----------------------------------------------------------------------
@@ -654,19 +667,23 @@ startWorker(End) ->
     ok.
 
 %%----------------------------------------------------------------------
-%% Function: reach/5
+%% Function: reach/8
 %% Purpose : Removes the first state from the list, 
 %%		generates new states returned by the call to transition that
-%%		are appended to the list of states. Recurses until there
-%%		are no further states to process. 
+%%		are immedetely sent to their owners. Then the input queue
+%%		is checked for new states that are eppended to the list of states. 
+%%		Recurses until there are no further states to process. 
 %% Args    : FirstState is the state to remove from the state queue
 %%	     RestStates is the remainder of the state queue
-%%	     End is the state we seek - may contain don't cares 
-%%	     BigList is a set of states that have been visited by this 
+%%	     End is the state we seek - currently ignored
+%%		 Names is the list of thread PIDs 
+%%	     HashTable is a set of states that have been visited by this 
 %%		thread, which are necessarily also owned by this thread. 
-%%		NOTE: Any line involving the BigList probably has poor performance.
 %%	     {NumSent, NumRecd} is the running total of the number of states
 %%	     sent and received, respectively
+%%		 NewStatesList is an artifact that is currently ignored
+%%		 Count is the number of visited states
+%%		 QLen is the length of RestStates
 %%
 %% Returns : done
 %%     
@@ -693,20 +710,21 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, HashTable, [],0, {RestStates, QLen-1} ),
+		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, 
+								HashTable, [],0, {RestStates, QLen-1} ),
  	    if Ret == done ->
 			done;
 		true -> {NewQ, NewNumRecd, NewQLen} = Ret,
 			reach(NewQ, End, Names, HashTable, 
 			{NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
 		end;
-	%	reach(RestStates, End, Names, HashTable, {NumSent+ThisNumSent, NumRecd}, NewStates++NewStateList, Count+1);
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
     NewNumSent = NumSent, % + sendStates(NewStates,Names),
 	TableSize = Count,
-    Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, HashTable, [],0, {[],0}),
+    Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
+							HashTable, [],0, {[],0}),
     if Ret == done ->
 	    done;
        true ->
@@ -759,12 +777,13 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
     if (Count rem 10000)  == 0 -> 
 	    io:format("VS=~w,  NS=~w, NR=~w" ++ 
-		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB |InQ|=~w, |StateQ|=~w->~w~n", 
+		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB, |InQ|=~w, |StateQ|=~w, Time=~w->~w~n", 
 		      [Count, NumSent, NumRecd,
 		       erlang:memory(system)/1048576, 
-		       erlang:memory(processes)/1048576, 
+		       erlang:memory(processes)/1048576,  	
 		       element(2,process_info(self(),message_queue_len)), 
 				QLen,
+				element(2,now())+element(3,now())*1.0e-6,
 		       self()]);
 
        true -> ok
@@ -779,16 +798,21 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 %%		BigListSize is used only to report the number of visited states upon termination
 %%		Names is the list of PIDs
 %%	     {NumSent, NumRecd} is the running total of the number of states
-%%	     sent and received, respectively. This does not include ANY load balancing messages (extraStates)
+%%	     sent and received, respectively. This does not include 
+%%		 ANY load balancing messages (extraStates)
 %%	     NewStates is a list accumulating the new received states
 %%	     NumStates is the size of NewStates, to avoid calling length(NewStates)
-%%		 {CurQ, CurQLen}: CurQ is the current state queue before checking for incoming states;
-%%		                  CurQLen is the length of CurQ. Note that we could easily avoid the parameter
-%%						  {CurQ,CurQLen} if we perform list concatenation of CurQ and NewStates in the calling code.
+%%		 {CurQ, CurQLen}: 
+%%			CurQ is the current state queue before checking for incoming states;
+%%		    CurQLen is the length of CurQ. Note that we could easily avoid the parameter
+%%			{CurQ,CurQLen} if we perform list concatenation of CurQ and NewStates in 
+%%			the calling code.
 %% Returns : EITHER List of received states with some bookkeeping in the form of
-%%		{NewStateQ, NewNumRecd, NewStateQLen}: NewStateQ is NewStates ++ CurQ, NewNumRecd is the running total of recieved messages,
-%%											   NewStateQLen is the length of NewStateQ 
-%%		OR the atom 'done' to indicate we are finished visiting states
+%%		{NewStateQ, NewNumRecd, NewStateQLen}: 
+%%				NewStateQ is NewStates ++ CurQ, NewNumRecd is the running total of
+%%					recieved messages,
+%%				NewStateQLen is the length of NewStateQ 
+%%			OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
 checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates,NumStates, {CurQ, CurQLen}) ->
@@ -815,9 +839,10 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	{OtherSize, OtherPID, myQSize} ->
 		LB = OtherSize + balanceTolerence(),
 		{NewQ, NewQLen} = if CurQLen > LB ->
-			io:format("PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", [self(),CurQLen,OtherSize, 
-																							(CurQLen-OtherSize) div balanceRatio(), 
-																							OtherPID]),
+			io:format("PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", 
+						[self(),CurQLen,OtherSize, 
+						(CurQLen-OtherSize) div balanceRatio(), 
+						OtherPID]),
 			T1 = sendExtraStates(OtherPID, CurQ, (CurQLen - OtherSize) div balanceRatio()),
 			T2 = CurQLen - ((CurQLen - OtherSize) div balanceRatio()),
 			{T1,T2};
@@ -850,7 +875,8 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	    terminateMe(BigListSize, rootPID(Names))
 
     after Timeout -> % wait for timeoutTime() ms if root
-		if Timeout == 0 -> {NewStates ++ CurQ, NumRecd, CurQLen+NumStates}; % non-blocking case, return
+		if Timeout == 0 ->  % non-blocking case, return 
+				{NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
 		   true -> % otherwise, root polls for termination
 		    io:format("PID ~w: Root has timed out, polling workers now...~n", [self()]),
 		    CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
@@ -1000,6 +1026,9 @@ startExternalProfiling(IsExtProfiling) ->
 %
 %
 % $Log: preach.erl,v $
+% Revision 1.36  2009/10/02 01:24:24  binghamb
+% Comments and fixed some ugly formatting.
+%
 % Revision 1.35  2009/09/24 02:21:47  binghamb
 % Merged two implementations of checkMessageQ into one. Makes changing the code easier, very slightly changes the algrithm to accept 'pause' messages with each call to checkMessageQ rather than only non-recursive calls. Does not affect correctness. Also fixed a bug related to barrier where deadlock occurs when running a single thread.
 %
