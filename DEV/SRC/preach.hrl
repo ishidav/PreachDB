@@ -120,6 +120,40 @@ isExtProfiling() ->
             false
     end.
 
+%%----------------------------------------------------------------------
+%% Function: isUsingMnesia/0
+%% Purpose : Test if -mnesia_dir was passed to erl.
+%%               
+%% Args    :  
+%%
+%% Returns : true or false 
+%%     
+%%----------------------------------------------------------------------
+isUsingMnesia() ->     
+    case init:get_argument(mnesia) of
+	{ok, _Args} ->
+            true;
+	error ->
+            false
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: getMnesiaDir/0
+%% Purpose : Return the PATH of Mnesia data
+%%               
+%% Args    :  
+%%
+%% Returns : string
+%%     
+%%----------------------------------------------------------------------
+getMnesiaDir() ->     
+    case init:get_argument(mnesia) of
+	{ok, [[_, Path]]} ->
+            Path;
+	true ->
+            ""
+    end.
+
 %--------------------------------------------------------------------------------
 %                             Revision History
 %

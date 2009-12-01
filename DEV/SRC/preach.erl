@@ -247,11 +247,12 @@ read_inFile(InFile,HostList,SLine) ->
 %% Returns : 
 %%     
 %%----------------------------------------------------------------------
-slaves(_Hostlist, _CWD, 1) -> 
-    ok;
+slaves(_HostList, _CWD, 1) -> 
+    [node()];
 slaves([Host|Hosts], CWD, NHosts) ->
     Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
 	" -pa " ++ CWD ++ " -pa " ++ CWD ++ "/ebin " ++  "-smp enable",
+    NodeName = string:concat("pruser", integer_to_list(NHosts)),
     
     % Pass cache option to workers 
     IsCaching = isCaching(),
@@ -267,9 +268,17 @@ slaves([Host|Hosts], CWD, NHosts) ->
        true -> 
 	    Args1 = Args0 
     end,
+    % Pass mnesia dir option to workers
+    IsUsingMnesia = isUsingMnesia(),
+    if IsUsingMnesia -> 
+	    MyMnesiaDir = "\\'\\\"" ++ string:sub_string(getMnesiaDir(), 2, string:len(getMnesiaDir())-1) ++ integer_to_list(NHosts) ++ "\\\"\\'",
+	    io:format("~s@~s Starting Mnesia in dir ~s.~n",[NodeName, Host, MyMnesiaDir]),  %% comment this out when done
+	    Args2 = Args1 ++ " -mnesia dir " ++ MyMnesiaDir; 
+       true -> 
+	    Args2 = Args1 
+    end,
 
-    NodeName = string:concat("pruser", integer_to_list(NHosts)),
-    case slave:start_link(Host, NodeName, Args1) of
+    SchemaNames = case slave:start_link(Host, NodeName, Args2) of
 	{ok, Node} ->
 	    io:format("Erlang node started = [~p]~n", [Node]),
 	    slaves(Hosts, CWD, NHosts - 1);
@@ -279,7 +288,9 @@ slaves([Host|Hosts], CWD, NHosts) ->
 	{error,Reason} ->
 	    io:format("Could not start workers: Reason= ~w...Exiting~n",[Reason]),
 	    halt()
-    end.
+    end,
+
+    [list_to_atom(NodeName ++ "@" ++ atom_to_list(Host) ) | SchemaNames].
 
 
 %%----------------------------------------------------------------------
@@ -345,7 +356,15 @@ setup() ->
                                Erlang reason: '~w'. ",[CWD]),
                        halt();
 	       true ->  
-		    slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
+		    SchemaNames = slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
+
+		    %% create Mnesia schema
+		    IsUsingMnesia = isUsingMnesia(),
+		    if IsUsingMnesia ->
+		        io:format("Schema names ~w ~n", [SchemaNames]),  %% comment out when done
+		        mnesia:create_schema(SchemaNames)
+		    end,
+
 		    %FMP should remove null param
 		    Names = initThreads([], Nhosts, null,HostList, Nhosts)
 	    end
@@ -368,6 +387,8 @@ start() ->
     startExternalProfiling(isExtProfiling()),
 
     createStateCache(isCaching()),
+
+    %startMnesia(isUsingMnesia()),
 
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
     barrier(Others, lists:zip(Others, 
@@ -1017,6 +1038,26 @@ startExternalProfiling(IsExtProfiling) ->
     case IsExtProfiling of 
 	true ->
 	    os:cmd("touch /tmp/.preach");
+	false->
+	    ok
+    end.  
+
+%%----------------------------------------------------------------------
+%% Function: startMnesia/1
+%% Purpose : Starts the Mnesia DBMS
+%% Args    : boolean
+%% Returns : ok or error
+%%     
+%%----------------------------------------------------------------------
+startMnesia(IsUsingMnesia) ->
+    case IsUsingMnesia of 
+	true ->
+	    MnesiaStatus = mnesia:start(),
+	    case MnesiaStatus of 
+	        {error, _} -> error;
+	        true -> ok
+	    end;
+
 	false->
 	    ok
     end.  

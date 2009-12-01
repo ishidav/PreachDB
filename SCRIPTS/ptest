@@ -56,6 +56,7 @@ my $statecaching    = '';  # optional var choosing whether to cach states
 my $mprofile  = undef;     # optional var choosing whether to mem profiling 
 my $nprofile  = undef;     # optional var choosing whether to network profiling 
 my $local     = '';        # optional var choosing whether to run locally
+my $mnesia    = undef;     # optional var choosing whether to use mnesia
 
 
 GetOptions ('help'    => \$help,
@@ -66,7 +67,8 @@ GetOptions ('help'    => \$help,
 	    'statecaching'  => \$statecaching, 
 	    'mprofile'  => \$mprofile,
 	    'nprofile'  => \$nprofile,
-	    'local'       => \$local
+	    'local'       => \$local,
+	    'mnesia'    => \$mnesia
     ) or usage("ERROR: Invalid command option");
 
 
@@ -146,6 +148,7 @@ sub asmErlangCmd{
     if ($local)       {$erl_command .= "-localmode ";}
     if($statecaching) { $erl_command .= "-statecaching ";}
     if($nprofile)     { $erl_command .= "-nprofile ";}
+    if($mnesia)     { $erl_command .= "-mnesia dir '\"/tmp/mnesia\"' ";}
 
     return $erl_command;
 }
