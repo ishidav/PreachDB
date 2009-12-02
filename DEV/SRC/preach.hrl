@@ -122,7 +122,7 @@ isExtProfiling() ->
 
 %%----------------------------------------------------------------------
 %% Function: isUsingMnesia/0
-%% Purpose : Test if -mnesia_dir was passed to erl.
+%% Purpose : Test if -mnesia dir was passed to erl.
 %%               
 %% Args    :  
 %%

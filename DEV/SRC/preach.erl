@@ -362,7 +362,8 @@ setup() ->
 		    IsUsingMnesia = isUsingMnesia(),
 		    if IsUsingMnesia ->
 		        io:format("Schema names ~w ~n", [SchemaNames]),  %% comment out when done
-		        mnesia:create_schema(SchemaNames)
+		        mnesia:create_schema(SchemaNames);
+		       true -> ok
 		    end,
 
 		    %FMP should remove null param
@@ -388,7 +389,12 @@ start() ->
 
     createStateCache(isCaching()),
 
-    %startMnesia(isUsingMnesia()),
+    MnesiaStartupStatus = startMnesia(isUsingMnesia()),
+    if MnesiaStartupStatus == error ->
+        io:format("start: Error Mnesia did not start on ~w~n", [node()]),
+        halt();
+       true -> ok
+    end,
 
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
     barrier(Others, lists:zip(Others, 
@@ -408,6 +414,7 @@ start() ->
     Dur = timer:now_diff(now(), T0)*1.0e-6,
     NumPurged = purgeRecQ(0),
     deleteStateCache(isCaching()),
+    stopMnesia(isUsingMnesia()),
     
     io:format("----------~n"),
     io:format("REPORT:~n"),
@@ -676,6 +683,13 @@ startWorker(End) ->
     startExternalProfiling(isExtProfiling()),
     createStateCache(isCaching()),
 
+    MnesiaStartupStatus = startMnesia(isUsingMnesia()),
+    if MnesiaStartupStatus == error ->
+        io:format("start: Error Mnesia did not start on ~w~n", [node()]),
+        halt();
+       true -> ok
+    end,
+
     HashTable = createHashTable(),
 
     % synchronizes w/ the root
@@ -685,6 +699,7 @@ startWorker(End) ->
     io:format("PID ~w: Worker is done~n", [self()]),
     
     deleteStateCache(isCaching()),
+    stopMnesia(isUsingMnesia()),
     ok.
 
 %%----------------------------------------------------------------------
@@ -1050,14 +1065,30 @@ startExternalProfiling(IsExtProfiling) ->
 %%     
 %%----------------------------------------------------------------------
 startMnesia(IsUsingMnesia) ->
+    io:format("~w in startMnesia with parameter ~w~n", [node(), IsUsingMnesia]),  %% comment out when done
     case IsUsingMnesia of 
 	true ->
 	    MnesiaStatus = mnesia:start(),
 	    case MnesiaStatus of 
 	        {error, _} -> error;
-	        true -> ok
+	        _Else -> ok
 	    end;
+	false->
+	    ok
+    end.  
 
+%%----------------------------------------------------------------------
+%% Function: stopMnesia/1
+%% Purpose : Stops the Mnesia DBMS
+%% Args    : boolean
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+stopMnesia(IsUsingMnesia) ->
+    case IsUsingMnesia of 
+	true ->
+	    mnesia:stop(),
+	    ok;
 	false->
 	    ok
     end.  
