@@ -87,13 +87,17 @@ connect(MasterNode, RamTables, DiscTables) ->
   spawn(MasterNode, ?MODULE, probe_db_nodes, [self()]),
   receive
     {probe_db_nodes_reply, DBNodes} ->
-      mnesia:change_config(extra_db_nodes, DBNodes),
-      mnesia:change_table_copy_type(schema, Node, disc_copies),
+      A = mnesia:change_config(extra_db_nodes, DBNodes),
+      io:format("~w change_config extra_db_nodes ~w status = ~w~n", [node(), DBNodes, A]),
+      B = mnesia:change_table_copy_type(schema, Node, disc_copies),
+      io:format("~w change_table_copy_type schema disc status = ~w~n", [node(), B]),
       lists:foreach(fun(X) ->
-                      mnesia:add_table_copy(X, Node, ram_copies)
+                      C = mnesia:add_table_copy(X, Node, ram_copies),
+                      io:format("~w add_table_copy ram_copies ~w status = ~w~n", [node(), X, C])
 		    end, RamTables),
       lists:foreach(fun(X) ->
-                      mnesia:add_table_copy(X, Node, disc_copies)
+                      D = mnesia:add_table_copy(X, Node, disc_copies),
+                      io:format("~w add_table_copy disc_copies ~w status = ~w~n", [node(), X, D])
 		    end, DiscTables),
       ok;
     Else ->
