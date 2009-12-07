@@ -32,7 +32,6 @@
 % gospel code
 %
 
-
 %% configuration-type functions
 timeoutTime() -> 3000.
 
@@ -60,12 +59,22 @@ balanceTolerence() -> 10000 div 8.
 %%     
 %%----------------------------------------------------------------------
 createHashTable() ->
-    %bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB).
-    TableName = list_to_atom("visited_state_" ++ atom_to_list(node())),
-    io:format("~w creating hash table ~w~n", [node(), TableName]),
-    Status = mnesia:create_table(TableName, [{disc_copies, [node()]}, {attributes, record_info(fields, visited_state)}]),
-    io:format("~w creating hash table ~w status ~w~n", [node(), TableName, Status]),
-    TableName.
+  IsUsingMnesia = isUsingMnesia(),
+  if IsUsingMnesia ->
+
+    %TableName = visited_state,
+    %io:format("~w creating hash table ~w~n", [node(), TableName]),
+    %Status = mnesia:create_table(TableName, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, visited_state)}]),
+    %io:format("~w creating hash table ~w status ~w~n", [node(), TableName, Status]),
+    %mnesia:info(),
+    %lists:map(fun(Node) -> 
+    %              SlaveStatus = mnesia:add_table_copy(visited_state, Node, disc_copies),
+    %              io:format("add ~w to visited_state table status = ~w~n", [Node, SlaveStatus])
+    %          end, nodes()),
+    %TableName;
+    visited_state;
+   true -> bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB)
+  end.
 
 %%----------------------------------------------------------------------
 %% Function: isMemberHashTable/2
@@ -79,14 +88,25 @@ createHashTable() ->
 %%     
 %%----------------------------------------------------------------------
 isMemberHashTable(Element, HashTable) ->
+  IsUsingMnesia = isUsingMnesia(),
+  if IsUsingMnesia ->
     case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
 	{atomic, [_X | _Y]} ->
 	     true;
 	{atomic, []} ->
 	    false;
-        _Else ->
+        Else ->
+            %io:format("~w isMemberHashTable(~w, ~w) returned ~w~n", [node(), Element, HashTable, Else]),
             false
-    end.
+    end;
+   true -> 
+    case bloom:member(Element,HashTable) of
+        true ->
+             true;
+        false ->
+            false
+    end
+  end.
 
 %%----------------------------------------------------------------------
 %% Function: addElemToHashTable/2
@@ -102,9 +122,17 @@ isMemberHashTable(Element, HashTable) ->
 %%     
 %%----------------------------------------------------------------------
 addElemToHashTable(Element, HashTable)->
-    %//massage Element into correct record type (table name is first element)//,
+  IsUsingMnesia = isUsingMnesia(),
+  if IsUsingMnesia ->
+    % massage Element into correct record type (table name is first element)
     Record = #visited_state{state = Element, processed = false},
-    mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end).
+    case mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end) of
+        {atomic, _} -> ok;
+        Else -> %io:format("~w addElemToHashTable(~w, ~w) returned ~w~n", [node(), Element, HashTable, Else]),
+                Else
+    end;
+   true -> bloom:add(Element,HashTable)
+  end.
 
 %%----------------------------------------------------------------------
 %% Function: createStateCache/1, deleteStateCache/1
@@ -283,7 +311,7 @@ slaves([Host|Hosts], CWD, NHosts) ->
     IsUsingMnesia = isUsingMnesia(),
     if IsUsingMnesia -> 
 	    MyMnesiaDir = "\\'\\\"" ++ string:sub_string(getMnesiaDir(), 2, string:len(getMnesiaDir())-1) ++ integer_to_list(NHosts) ++ "\\\"\\'",
-	    io:format("~s@~s Starting Mnesia in dir ~s.~n",[NodeName, Host, MyMnesiaDir]),  %% comment this out when done
+	    %io:format("~s@~s Starting Mnesia in dir ~s.~n",[NodeName, Host, MyMnesiaDir]),  %% comment this out when done
 	    Args2 = Args1 ++ " -mnesia dir " ++ MyMnesiaDir; 
        true -> 
 	    Args2 = Args1 
@@ -370,34 +398,43 @@ setup() ->
 		    SchemaNames = slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
 
 		    %FMP should remove null param
-		    Names = initThreads([], Nhosts, null,HostList, Nhosts),
+		    Names = initThreads([], Nhosts, null,HostList, Nhosts)
 
 		    %% create Mnesia schema
-		    IsUsingMnesia = isUsingMnesia(),
-		    if IsUsingMnesia ->
-                        % Other nodes need to be up before creating schema
-                        Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
-                        io:format("Waiting on Others = ~w~n", [Others]),  %% comment out when done
-                        barrier(Others, lists:zip(Others, 
-			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
+		    %IsUsingMnesia = isUsingMnesia(),
+		    %if IsUsingMnesia ->
+                    %    % Other nodes need to be up before creating schema
+                    %    Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
+                    %    io:format("Waiting on Others = ~w~n", [Others]),  %% comment out when done
+                    %    barrier(Others, lists:zip(Others, 
+		    %	       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
 
-		        io:format("root creating schema with Schema names ~w ~n", [SchemaNames]),  %% comment out when done
-                        io:format("current set of nodes = ~w~n", [[node() | nodes()]]),
-		        SchemaCreationStatus = mnesia:create_schema(SchemaNames),
-                        io:format("root created schema exit status ~w~n", [SchemaCreationStatus]),
-                        if ok =/= SchemaCreationStatus ->
-                            halt();
-                           true -> ok
-                        end,
+		    %   io:format("root creating schema with Schema names ~w ~n", [SchemaNames]),  %% comment out when done
+		    %   SchemaCreationStatus = mnesia:create_schema([node()]),
+                    %   io:format("root created schema exit status ~w~n", [SchemaCreationStatus]),
+                    %   if ok =/= SchemaCreationStatus ->
+                    %       halt();
+                    %      true -> ok
+                    %   end,
+                    %   MnesiaStartupStatus = startMnesia(isUsingMnesia()),
+                    %   if MnesiaStartupStatus == error ->
+                    %       io:format("start: Error Mnesia did not start on ~w~n", [node()]),
+                    %       halt();
+                    %      true -> ok
+                    %   end,
 
-		        % schema must be created before Others proceed to start mnesia
-                        io:format("Waiting on Others = ~w~n", [Others]),  %% comment out when done
-                        % send message to every node to continue
-                        lists:map(fun(X) -> X ! {ready, self()} end, Others),
-                        io:format("root proceeding to start mnesia~n", []);  %% comment out when done
+                    %   io:format("root adding slaves to schema~n", []),
+                    %   MnesiaChangeConfigStatus = mnesia:change_config(extra_db_nodes, nodes()),
+                    %   io:format("root add extra_db_nodes status = ~w~n", [MnesiaChangeConfigStatus]),
 
-		       true -> ok
-		    end
+		    %   % schema must be created before Others proceed to start mnesia
+                    %   io:format("Waiting on Others = ~w~n", [Others]),  %% comment out when done
+                    %   % send message to every node to continue
+                    %   lists:map(fun(X) -> X ! {ready, self()} end, Others),
+                    %   io:format("root proceeding to start mnesia~n", []);  %% comment out when done
+
+		    %   true -> ok
+		    %end
 	    end
     end,
     {Names, Nhosts}.
@@ -414,19 +451,19 @@ setup() ->
 %%     
 %%----------------------------------------------------------------------
 start() ->
+    io:format("~w started PID ~w~n", [node(), self()]),
     {Names, P} = setup(), 
     startExternalProfiling(isExtProfiling()),
 
     createStateCache(isCaching()),
 
-    MnesiaStartupStatus = startMnesia(isUsingMnesia()),
-    if MnesiaStartupStatus == error ->
-        io:format("start: Error Mnesia did not start on ~w~n", [node()]),
-        halt();
-       true -> ok
-    end,
+    createMnesiaTables(isUsingMnesia()),
+
+    HashTable = createHashTable(),
 
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
+    lists:map(fun(X) -> X ! {ready, self()} end, Others),
+
     barrier(Others, lists:zip(Others, 
 			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
 
@@ -434,7 +471,7 @@ start() ->
 
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
-    HashTable = createHashTable(),
+    %HashTable = createHashTable(),
 
     reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
     
@@ -485,6 +522,7 @@ autoStart() ->
     displayHeader(),
     displayOptions(),
     process_flag(trap_exit,true),
+    {module, _} = code:load_file(ce_db),
     start().
 
 %%----------------------------------------------------------------------
@@ -710,36 +748,21 @@ startWorker(End) ->
     receive
         {Names, names} -> do_nothing % dummy RHS
     end,
+    {module, _} = code:load_file(ce_db),
     startExternalProfiling(isExtProfiling()),
     createStateCache(isCaching()),
 
-    IsUsingMnesia = isUsingMnesia(),
-    if IsUsingMnesia ->
-        % "barrier": worker must be up before root creates mnesia schema
-        io:format("~w sending root schema barrier1 ready~n", [node()]),
-        rootPID(Names) ! {ready, self()},
-        % need to wait for schema to be created before starting mnesia
-        % receive message from root
-        receive 
-            {ready, _Root} -> ok
-        end,
-        io:format("~w received schema barrier2 ready from root~n", [node()]);
-       true -> ok
+    receive
+        {ready, _} -> ok
     end,
-
-    MnesiaStartupStatus = startMnesia(isUsingMnesia()),
-    if MnesiaStartupStatus == error ->
-        io:format("start: Error Mnesia did not start on ~w~n", [node()]),
-        halt();
-       true -> ok
-    end,
-
-    io:format("~w started mnesia and is creating hash table~n", [node()]),
+    ok = ce_db:connect(node(rootPID(Names)), [], [visited_state]),
     HashTable = createHashTable(),
 
     % synchronizes w/ the root
     rootPID(Names) ! {ready, self()},
-	reach([], End, Names, HashTable, {0,0},[],0,0),
+
+    io:format("~w starting reach/4~n", [node()]),
+    reach([], End, Names, HashTable, {0,0},[],0,0),
 
     io:format("PID ~w: Worker is done~n", [self()]),
     
@@ -1113,11 +1136,12 @@ startMnesia(IsUsingMnesia) ->
     io:format("~w in startMnesia with parameter ~w~n", [node(), IsUsingMnesia]),  %% comment out when done
     case IsUsingMnesia of 
 	true ->
-            mnesia:info(),
-            mnesia:system_info(all),
+            %mnesia:info(),
+            %mnesia:system_info(all),
 	    MnesiaStatus = mnesia:start(),
-            mnesia:info(),
-            mnesia:system_info(all),
+            %mnesia:info(),
+            %mnesia:system_info(all),
+            io:format("~w started mnesia status = ~w~n", [node(), MnesiaStatus]),
 	    case MnesiaStatus of 
 	        {error, _} -> error;
 	        _Else -> ok
@@ -1141,6 +1165,69 @@ stopMnesia(IsUsingMnesia) ->
 	false->
 	    ok
     end.  
+
+%%----------------------------------------------------------------------
+%% Function: createMnesiaTables/1
+%% Purpose : Create schema for root, start Mnesia, create tables
+%% Args    : boolean
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+createMnesiaTables(IsUsingMnesia) ->
+    case IsUsingMnesia of 
+	true ->
+            SchemaCreationStatus = mnesia:create_schema([node()]),
+            io:format("root created schema exit status ~w~n", [SchemaCreationStatus]),
+            if ok =/= SchemaCreationStatus -> halt();
+               true -> ok
+            end,
+            MnesiaStartupStatus = startMnesia(isUsingMnesia()),
+            if MnesiaStartupStatus == error ->
+                io:format("start: Error Mnesia did not start on ~w~n", [node()]),
+                halt();
+               true -> ok
+            end,
+            CreateHTStatus = mnesia:create_table(visited_state, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, visited_state)}]),
+            io:format("~w creating hash table ~w status ~w~n", [node(), visited_state, CreateHTStatus]),
+            if {atomic, ok} =/= CreateHTStatus -> halt();
+               true -> ok
+            end,
+
+	    ok;
+	false->
+	    ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: attachToMnesiaTables/1
+%% Purpose : Have slaves attach to root's Mnesia schema and tables
+%% Args    : boolean
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+attachToMnesiaTables(IsUsingMnesia) ->
+    case IsUsingMnesia of 
+	true ->
+            MnesiaStartupStatus = startMnesia(isUsingMnesia()),
+            if MnesiaStartupStatus == error ->
+                io:format("start: Error Mnesia did not start on ~w~n", [node()]),
+                halt();
+               true -> ok
+            end,
+            % "barrier": worker must be up before root creates mnesia schema
+            %io:format("~w sending root schema barrier1 ready~n", [node()]),
+            %rootPID(Names) ! {ready, self()},
+            % need to wait for schema to be created before starting mnesia
+            % receive message from root
+            %receive 
+            %    {ready, _Root} -> ok
+            %end,
+            %io:format("~w received schema barrier2 ready from root~n", [node()]),
+            mnesia:change_table_copy_type(schema, node(), disc_copies),
+            mnesia:add_table_copy(visited_state, node(), disc_copies),
+            ok;
+        _Else -> ok
+    end.
 
 %--------------------------------------------------------------------------------
 %                             Revision History
