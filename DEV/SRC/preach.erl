@@ -33,7 +33,7 @@
 %
 
 %% configuration-type functions
-timeoutTime() -> 3000.
+timeoutTime() -> 60000.
 
 %% these are load balancing parameters. Still in experimental stage,
 %% will eventually be moved to preach.hrl or integrated into ptest.
@@ -95,7 +95,7 @@ isMemberHashTable(Element, HashTable) ->
 	     true;
 	{atomic, []} ->
 	    false;
-        Else ->
+        _Else ->
             %io:format("~w isMemberHashTable(~w, ~w) returned ~w~n", [node(), Element, HashTable, Else]),
             false
     end;
@@ -429,16 +429,20 @@ start() ->
     % wait for others to add to schema
     barrier(Others, lists:zip(Others, 
 			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
-    DBNodes = nodes(),
-    lists:map(fun(X) ->
-                  ExtraNodesStatus = mnesia:add_table_copy(schema, X, ram_copies),
-                  io:format("~w setting ram schema for ~w status = ~w~n", [node(), X, ExtraNodesStatus])
-              end, DBNodes),
-    mnesia:change_table_copy_type (schema, node (), disc_copies),
-    mnesia:wait_for_tables([schema], 20000),
-    createMnesiaTables(isUsingMnesia()),
-    mnesia:wait_for_tables([schema, visited_state], 20000),
-    %mnesia:info(),
+
+    IsUsingMnesia = isUsingMnesia(),
+    if IsUsingMnesia ->
+        DBNodes = nodes(),
+        lists:map(fun(X) ->
+                      ExtraNodesStatus = mnesia:add_table_copy(schema, X, ram_copies),
+                      io:format("~w setting ram schema for ~w status = ~w~n", [node(), X, ExtraNodesStatus])
+                  end, DBNodes),
+        mnesia:change_table_copy_type (schema, node (), disc_copies),
+        mnesia:wait_for_tables([schema], 20000),
+        createMnesiaTables(isUsingMnesia()),
+        mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
+       true -> ok
+    end,
 
     lists:map(fun(X) -> X ! {ready, self()} end, Others),
 
@@ -737,11 +741,14 @@ startWorker(End) ->
     receive
         {ready, _} -> ok
     end,
-
-    ok = ce_db:connect(node(rootPID(Names)), [], [visited_state]),
     HashTable = createHashTable(),
-    mnesia:wait_for_tables([schema, visited_state], 20000),    
-    %mnesia:info(),
+
+    IsUsingMnesia = isUsingMnesia(),
+    if IsUsingMnesia ->
+        ok = ce_db:connect(node(rootPID(Names)), [], [visited_state, state_queue]),
+        mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
+       true -> ok
+    end,
 
     % synchronizes w/ the root
     rootPID(Names) ! {ready, self()},
@@ -777,6 +784,7 @@ startWorker(End) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewStateList, Count, QLen) ->
+            %io:format("~w in reach(~w)~n", [node(), FirstState]),
 	    BalFreq = balanceFrequency(),
 		IsLB = isLoadBalancing(),
 		if IsLB and ((Count rem BalFreq) == 4000)  ->
@@ -798,6 +806,10 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
+
+            % remove the state from the Mnesia state queue
+            delElemFromStateQueue(isUsingMnesia(), FirstState, state_queue),
+
 		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, 
 								HashTable, [],0, {RestStates, QLen-1} ),
  	    if Ret == done ->
@@ -809,16 +821,21 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
-    NewNumSent = NumSent, % + sendStates(NewStates,Names),
-	TableSize = Count,
-    Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
+    % if mnesia check if anything in state queue, otherwise do rest of function
+    case firstOfStateQueue(isUsingMnesia(), state_queue) of
+        ok ->
+            NewNumSent = NumSent, % + sendStates(NewStates,Names),
+            TableSize = Count,
+            Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
 							HashTable, [],0, {[],0}),
-    if Ret == done ->
-	    done;
-       true ->
-	    {NewQ, NewNumRecd, NumStates} = Ret,
-	    reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
-     end.
+            if Ret == done ->
+	        done;
+               true ->
+	        {NewQ, NewNumRecd, NumStates} = Ret,
+	        reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
+            end;
+        State -> reach([State], End, Names, HashTable, {NumSent, NumRecd}, [], Count, 1)
+    end.
 
 
 sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
@@ -916,6 +933,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 				  NewStates, NumStates,{CurQ, CurQLen});
 		false ->
 		    addElemToHashTable(State, HashTable),
+                    addElemToStateQueue(isUsingMnesia(), State, state_queue, 0),
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
 	    end;
@@ -1173,10 +1191,9 @@ createMnesiaTables(IsUsingMnesia) ->
             %end,
             CreateHTStatus = mnesia:create_table(visited_state, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, visited_state)}]),
             io:format("~w creating hash table ~w status ~w~n", [node(), visited_state, CreateHTStatus]),
-            if {atomic, ok} =/= CreateHTStatus -> halt();
-               true -> ok
-            end,
-
+            % if I feel like it, someday I'll put an index on order for the state queue
+            CreateQStatus = mnesia:create_table(state_queue, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, state_queue)}]),
+            io:format("~w creating state queue table ~w status ~w~n", [node(), state_queue, CreateQStatus]),
 	    ok;
 	false->
 	    ok
@@ -1211,6 +1228,60 @@ attachToMnesiaTables(IsUsingMnesia) ->
             mnesia:add_table_copy(visited_state, node(), disc_copies),
             ok;
         _Else -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: addElemToStateQueue/4
+%% Purpose : add the element to the Mnesia persisted state queue
+%% Args    : boolean, State, atom table name, int
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
+    if IsUsingMnesia ->
+        % massage Element into correct record type (table name is first element)
+        Record = #state_queue{state = Element, order = Order},
+        case mnesia:transaction(fun() -> mnesia:write(StateQueue, Record, write) end) of
+            {atomic, _} -> ok;
+            Else -> io:format("~w addElemToStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Order, Else]),
+                Else
+        end;
+       true -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: delElemFromStateQueue/3
+%% Purpose : remove the element to the Mnesia persisted state queue
+%% Args    : boolean, State, atom table name
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
+    if IsUsingMnesia ->
+        case mnesia:transaction(fun() -> mnesia:delete(StateQueue, Element, write) end) of
+            {atomic, _} -> ok;
+            Else -> io:format("~w delElemFromStateQueue(~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Else]),
+                Else
+        end;
+       true -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: firstOfStateQueue/2
+%% Purpose : check if anything in the state queue, if so, return it
+%% Args    : boolean, atom table name
+%% Returns : State or ok
+%%     
+%%----------------------------------------------------------------------
+firstOfStateQueue(IsUsingMnesia, StateQueue) ->
+    if IsUsingMnesia ->
+        case mnesia:transaction(fun() -> mnesia:first(StateQueue) end) of
+            {atomic, '$end_of_table'} -> ok;
+            {atomic, State} -> State;
+            Else -> io:format("~w firstOfStateQueue(~w, ~w) returned ~w~n", [node(), IsUsingMnesia, StateQueue, Else]),
+                ok
+        end;
+       true -> ok
     end.
 
 %--------------------------------------------------------------------------------
