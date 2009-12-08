@@ -438,6 +438,7 @@ start() ->
     mnesia:wait_for_tables([schema], 20000),
     createMnesiaTables(isUsingMnesia()),
     mnesia:wait_for_tables([schema, visited_state], 20000),
+    %mnesia:info(),
 
     lists:map(fun(X) -> X ! {ready, self()} end, Others),
 
@@ -739,12 +740,12 @@ startWorker(End) ->
 
     ok = ce_db:connect(node(rootPID(Names)), [], [visited_state]),
     HashTable = createHashTable(),
-    mnesia:info(),
+    mnesia:wait_for_tables([schema, visited_state], 20000),    
+    %mnesia:info(),
 
     % synchronizes w/ the root
     rootPID(Names) ! {ready, self()},
 
-    io:format("~w starting reach/4~n", [node()]),
     reach([], End, Names, HashTable, {0,0},[],0,0),
 
     io:format("PID ~w: Worker is done~n", [self()]),
