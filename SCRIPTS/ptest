@@ -107,29 +107,15 @@ postProcess("compile", "emake.log");
 # Run   
 #
 ####################################################
-my $logfile = $module . ".log";
-my $erl_command;
-$erl_command = asmErlangCmd();
-if (!defined($nprofile)){
-    system("$erl_command 2>&1| tee $logfile"); 
-}else{
-    my @hosts = uniquifyHostsList();
-    my $pid;
-    print "ptest: Number of unique hosts is ". ($#hosts+1) . "\n";
-    for(my $i = 0; $i <= $#hosts; $i = $i + 1) {
-	#print "Spawning $hosts[$i]\n";
-	system("$ENV{PREACH_PATH}/SCRIPTS/networkMonitor --host=$hosts[$i]&");
-    }
-   # sleep(1);
-    do{
-	$barrier = `ps -eo pid,user,cmd | grep networkMonitor | grep $ENV{USER} | grep -v grep |wc -l`;
-	#print "barrier#=$barrier\n";
-	sleep(1);
-    }while($barrier < ($#hosts));
-    sleep(2);
-    system("$erl_command 2>&1| tee $logfile"); 
 
+open HOSTS, "hosts" or die "hosts not found";
+@hosts = <HOSTS>;
+s/\W//g for @hosts;
+
+foreach (0 .. $#hosts) {
+    system("ssh -f $hosts[$_] nohup erl -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir '\"/tmp/mnesia$_\"' '2>&1| tee $module$_.log &'");
 }
+
 postProcess("run", $logfile);
 
 ####################################################

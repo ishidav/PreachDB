@@ -1,0 +1,16 @@
+#!/usr/bin/env perl
+
+if ($#ARGV > -1) {
+    open(my $in,  "<",  "hosts")  or die "Can't open hosts: $!";
+    while( <$in> ) {
+        last if $. >= $ARGV[0];
+    }
+    if(!eof($in)) {
+        my $host = <$in>;
+        $host =~ s/(\s|\W)//g;
+        print "ssh $host pkill pruser$ARGV[0]\n";
+        system("ssh $host pkill pruser$ARGV[0]");
+    }
+    else { print "eof\n"; }
+    close $in or die "$in: $!";
+}

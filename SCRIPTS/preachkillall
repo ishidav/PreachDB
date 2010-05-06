@@ -1,0 +1,14 @@
+#!/usr/bin/env perl
+
+open(my $in,  "<",  "hosts")  or die "Can't open hosts: $!";
+my @hostsfile = <$in>;
+#remove duplicates
+undef %saw;
+@saw{@hostsfile} = ();
+@hosts = keys %saw;
+foreach(@hosts) {
+    s/\W//;
+    print "ssh $_ killall erl";
+    system("ssh $_ killall erl");
+}
+close $in or die "$in: $!";
