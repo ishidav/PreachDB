@@ -113,8 +113,8 @@ open HOSTS, "hosts" or die "hosts not found";
 s/(\s|\W)//g for @hosts;
 
 foreach (0 .. $#hosts) {
-    print "ssh -f $hosts[$_] nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &' \n";
-    system("ssh -f $hosts[$_] nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &'");
+    print "ssh -f $hosts[$_] cd $ENV{PWD} \\&\\& nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &' \n";
+    system("ssh -f $hosts[$_] cd $ENV{PWD} \\&\\& nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &'");
 }
 
 

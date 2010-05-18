@@ -501,17 +501,30 @@ start() ->
 newstart() ->
     %% print who I am
     io:format("Hello from ~s, my mnesia dir is ~s~n", [getSname(), getMnesiaDir()]),
+    register(list_to_atom(getSname()), self()),
     IAmRoot = amIRoot(),
     if IAmRoot -> io:format("I am root~n"); true -> ok end,
-    %{RevHostList,Nhosts} = hosts(),
-    %HostList = lists:reverse(RevHostList),
+    io:format("My cwd is ~s~n", [element(2, file:get_cwd())]),
+    {HostList,Nhosts} = hosts(),
+    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    lists:foreach(fun(X) -> io:format("~w~n", [X]) end, NamesList),
+    Names = dict:from_list(lists:zip(lists:seq(1, Nhosts), NamesList)),
+    %% when sending messages, use {PID, pruserX@node} ! Message
+    %% might want to register(pruserX, self()) so don't need to know PIDs
+    %% Names should just be where nodes can send each other messages
 
     IsUsingMnesia = isUsingMnesia(),
     HashTable = createHashTable(IsUsingMnesia),
-    addMnesiaTables(IsUsingMnesia),
+    addMnesiaTables(IsUsingMnesia, list_to_atom("pruser0@" ++ atom_to_list(lists:nth(1, HostList)))),
     timer:sleep(4000),
-    %%mnesia:info(),
+    %mnesia:info(),
     %% barrier here until all nodes up
+    %% if root wait for message from all others
+    %% else send root message
+    %% timer
+    %% call reach
+    %% end timer
+    %% print result
     stopMnesia(IsUsingMnesia),
     io:format("----------~n"),
     done.
@@ -1187,25 +1200,24 @@ createMnesiaTables() ->
     ok.
 
 %%----------------------------------------------------------------------
-%% Function: attachToMnesiaTables/0
+%% Function: attachToMnesiaTables/1
 %% Purpose : Have slaves attach to root's Mnesia schema and tables
-%% Args    : boolean
+%% Args    : node
 %% Returns : ok
-%%     TODO!
-%%----------------------------------------------------------------------
-attachToMnesiaTables() ->
-    timer:sleep(2000),
-    MasterNode = pruser0@marmot,
-    ce_db:connect(MasterNode, [], [visited_state, state_queue]).
-
-%%----------------------------------------------------------------------
-%% Function: addMnesiaTables/1
-%% Purpose : Will create table if root or try to connect to root's table
-%% Args    : boolean, boolean
-%% Returns : ok or error
 %%     
 %%----------------------------------------------------------------------
-addMnesiaTables(IsUsingMnesia) ->
+attachToMnesiaTables(RootNode) ->
+    timer:sleep(2000),
+    ce_db:connect(RootNode, [], [visited_state, state_queue]).
+
+%%----------------------------------------------------------------------
+%% Function: addMnesiaTables/2
+%% Purpose : Will create table if root or try to connect to root's table
+%% Args    : boolean, node
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+addMnesiaTables(IsUsingMnesia, RootNode) ->
     IAmRoot = amIRoot(),
     MnesiaSchemaExists = mnesia:system_info(use_dir),
     case IsUsingMnesia of 
@@ -1214,7 +1226,7 @@ addMnesiaTables(IsUsingMnesia) ->
                 false ->
                     case IAmRoot of
                         true -> createMnesiaTables();
-                        false -> attachToMnesiaTables();
+                        false -> attachToMnesiaTables(RootNode);
                         _Else -> ok
                     end;
                 true -> mnesia:start(), ok;
