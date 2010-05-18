@@ -154,6 +154,36 @@ getMnesiaDir() ->
             ""
     end.
 
+%%----------------------------------------------------------------------
+%% Function: getSname/0
+%% Purpose : Return the sname commandline arg
+%%               
+%% Args    :  
+%%
+%% Returns : string
+%%     
+%%----------------------------------------------------------------------
+getSname() ->     
+    case init:get_argument(sname) of
+	{ok, [[Path]]} ->
+            Path;
+	true ->
+            ""
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: amIRoot/0
+%% Purpose : check if I'm root based on my sname
+%%               
+%% Args    :  
+%%
+%% Returns : boolean
+%%     
+%%----------------------------------------------------------------------
+amIRoot() ->     
+    MySname = getSname(),
+    string:equal(MySname, "pruser0").
+
 %--------------------------------------------------------------------------------
 %                             Revision History
 %

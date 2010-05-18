@@ -110,13 +110,13 @@ postProcess("compile", "emake.log");
 
 open HOSTS, "hosts" or die "hosts not found";
 @hosts = <HOSTS>;
-s/\W//g for @hosts;
+s/(\s|\W)//g for @hosts;
 
 foreach (0 .. $#hosts) {
-    system("ssh -f $hosts[$_] nohup erl -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir '\"/tmp/mnesia$_\"' '2>&1| tee $module$_.log &'");
+    print "ssh -f $hosts[$_] nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &' \n";
+    system("ssh -f $hosts[$_] nohup erl -noinput -sname pruser$_ -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \\'\\\"/tmp/mnesia$_\\\"\\' '2>&1| tee $ENV{PWD}/$module$_.log &'");
 }
 
-postProcess("run", $logfile);
 
 ####################################################
 #

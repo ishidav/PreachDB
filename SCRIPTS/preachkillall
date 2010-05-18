@@ -8,7 +8,7 @@ undef %saw;
 @hosts = keys %saw;
 foreach(@hosts) {
     s/\W//;
-    print "ssh $_ killall erl";
-    system("ssh $_ killall erl");
+    print "ssh $_ killall pruser";
+    system("ssh $_ killall pruser");
 }
 close $in or die "$in: $!";

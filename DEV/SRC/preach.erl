@@ -58,8 +58,8 @@ balanceTolerence() -> 10000 div 8.
 %%           mnesia table will return TableName
 %%     
 %%----------------------------------------------------------------------
-createHashTable() ->
-  IsUsingMnesia = isUsingMnesia(),
+createHashTable(IsUsingMnesia) ->
+
   if IsUsingMnesia ->
 
     %TableName = visited_state,
@@ -409,7 +409,7 @@ setup() ->
     {Names, Nhosts}.
 
 %%----------------------------------------------------------------------
-%% Function: start/3
+%% Function: start/0
 %% Purpose : A timing wrapper for the parallel version of 
 %%				our model checker.
 %% Args    : P is the number of Erlang threads to use;
@@ -422,15 +422,16 @@ start() ->
     startExternalProfiling(isExtProfiling()),
     createStateCache(isCaching()),
 
-    startMnesia(isUsingMnesia()),
-    HashTable = createHashTable(),
+    IsUsingMnesia = isUsingMnesia(),
+    mnesia:start(), %startMnesia(IsUsingMnesia),
+    HashTable = createHashTable(IsUsingMnesia),
 
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
     % wait for others to add to schema
     barrier(Others, lists:zip(Others, 
 			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
 
-    IsUsingMnesia = isUsingMnesia(),
+
     if IsUsingMnesia ->
         DBNodes = nodes(),
         lists:map(fun(X) ->
@@ -439,7 +440,7 @@ start() ->
                   end, DBNodes),
         mnesia:change_table_copy_type (schema, node (), disc_copies),
         mnesia:wait_for_tables([schema], 20000),
-        createMnesiaTables(isUsingMnesia()),
+        createMnesiaTables(),
         mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
        true -> ok
     end,
@@ -453,7 +454,6 @@ start() ->
 
     sendStates(startstates(),Names),
     NumSent = length(startstates()),
-    %HashTable = createHashTable(),
 
     reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
     
@@ -490,7 +490,34 @@ start() ->
 
 
 %%----------------------------------------------------------------------
-%% Function: autoStart/1
+%% Function: newstart/0
+%% Purpose : A timing wrapper for the parallel version of 
+%%				our model checker.
+%% Args    : 
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+
+newstart() ->
+    %% print who I am
+    io:format("Hello from ~s, my mnesia dir is ~s~n", [getSname(), getMnesiaDir()]),
+    IAmRoot = amIRoot(),
+    if IAmRoot -> io:format("I am root~n"); true -> ok end,
+    %{RevHostList,Nhosts} = hosts(),
+    %HostList = lists:reverse(RevHostList),
+
+    IsUsingMnesia = isUsingMnesia(),
+    HashTable = createHashTable(IsUsingMnesia),
+    addMnesiaTables(IsUsingMnesia),
+    timer:sleep(4000),
+    %%mnesia:info(),
+    %% barrier here until all nodes up
+    stopMnesia(IsUsingMnesia),
+    io:format("----------~n"),
+    done.
+
+%%----------------------------------------------------------------------
+%% Function: autoStart/0
 %% Purpose : A wrapper for the parallel version of our model checker.
 %%           To be used when called from the ptest script
 %%           The main purpose is to separate basic initialization (non-algorithmic)
@@ -505,7 +532,7 @@ autoStart() ->
     displayOptions(),
     process_flag(trap_exit,true),
     {module, _} = code:load_file(ce_db),
-    start().
+    newstart().
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/4
@@ -733,7 +760,7 @@ startWorker(End) ->
     {module, _} = code:load_file(ce_db),
     startExternalProfiling(isExtProfiling()),
     createStateCache(isCaching()),
-    startMnesia(isUsingMnesia()),
+    mnesia:start(), %startMnesia(isUsingMnesia()),
 
     % tell root to add me to schema
     rootPID(Names) ! {ready, self()},
@@ -741,9 +768,9 @@ startWorker(End) ->
     receive
         {ready, _} -> ok
     end,
-    HashTable = createHashTable(),
-
     IsUsingMnesia = isUsingMnesia(),
+    HashTable = createHashTable(IsUsingMnesia),
+
     if IsUsingMnesia ->
         ok = ce_db:connect(node(rootPID(Names)), [], [visited_state, state_queue]),
         mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
@@ -1128,31 +1155,6 @@ startExternalProfiling(IsExtProfiling) ->
     end.  
 
 %%----------------------------------------------------------------------
-%% Function: startMnesia/1
-%% Purpose : Starts the Mnesia DBMS
-%% Args    : boolean
-%% Returns : ok or error
-%%     
-%%----------------------------------------------------------------------
-startMnesia(IsUsingMnesia) ->
-    io:format("~w in startMnesia with parameter ~w~n", [node(), IsUsingMnesia]),  %% comment out when done
-    case IsUsingMnesia of 
-	true ->
-            %mnesia:info(),
-            %mnesia:system_info(all),
-	    MnesiaStatus = mnesia:start(),
-            %mnesia:info(),
-            %mnesia:system_info(all),
-            io:format("~w started mnesia status = ~w~n", [node(), MnesiaStatus]),
-	    case MnesiaStatus of 
-	        {error, _} -> error;
-	        _Else -> ok
-	    end;
-	false->
-	    ok
-    end.  
-
-%%----------------------------------------------------------------------
 %% Function: stopMnesia/1
 %% Purpose : Stops the Mnesia DBMS
 %% Args    : boolean
@@ -1169,64 +1171,55 @@ stopMnesia(IsUsingMnesia) ->
     end.  
 
 %%----------------------------------------------------------------------
-%% Function: createMnesiaTables/1
-%% Purpose : Create schema for root, start Mnesia, create tables
-%% Args    : boolean
-%% Returns : ok
+%% Function: createMnesiaTables/0
+%% Purpose : Create Mnesia tables, assumes schema is already created
+%%          and set to disc
+%% Args    : 
+%% Returns : ok or {error, Reason}
 %%     
 %%----------------------------------------------------------------------
-createMnesiaTables(IsUsingMnesia) ->
-    case IsUsingMnesia of 
-	true ->
-            %SchemaCreationStatus = mnesia:create_schema([node()]),
-            %io:format("root created schema exit status ~w~n", [SchemaCreationStatus]),
-            %if ok =/= SchemaCreationStatus -> halt();
-            %   true -> ok
-            %end,
-            %MnesiaStartupStatus = startMnesia(isUsingMnesia()),
-            %if MnesiaStartupStatus == error ->
-            %    io:format("start: Error Mnesia did not start on ~w~n", [node()]),
-            %    halt();
-            %   true -> ok
-            %end,
-            CreateHTStatus = mnesia:create_table(visited_state, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, visited_state)}]),
-            io:format("~w creating hash table ~w status ~w~n", [node(), visited_state, CreateHTStatus]),
-            % if I feel like it, someday I'll put an index on order for the state queue
-            CreateQStatus = mnesia:create_table(state_queue, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, state_queue)}]),
-            io:format("~w creating state queue table ~w status ~w~n", [node(), state_queue, CreateQStatus]),
-	    ok;
-	false->
-	    ok
-    end.
+createMnesiaTables() ->
+    ce_db:create([  {visited_state, [{disc_copies, [node()]}, 
+    {local_content, true}, {attributes, record_info(fields, visited_state)}]},
+                    {state_queue, [{disc_copies, [node()]}, 
+    {local_content, true}, {attributes, record_info(fields, state_queue)}]}]),
+    timer:sleep(1000),
+    ok.
 
 %%----------------------------------------------------------------------
-%% Function: attachToMnesiaTables/1
+%% Function: attachToMnesiaTables/0
 %% Purpose : Have slaves attach to root's Mnesia schema and tables
 %% Args    : boolean
 %% Returns : ok
+%%     TODO!
+%%----------------------------------------------------------------------
+attachToMnesiaTables() ->
+    timer:sleep(2000),
+    MasterNode = pruser0@marmot,
+    ce_db:connect(MasterNode, [], [visited_state, state_queue]).
+
+%%----------------------------------------------------------------------
+%% Function: addMnesiaTables/1
+%% Purpose : Will create table if root or try to connect to root's table
+%% Args    : boolean, boolean
+%% Returns : ok or error
 %%     
 %%----------------------------------------------------------------------
-attachToMnesiaTables(IsUsingMnesia) ->
+addMnesiaTables(IsUsingMnesia) ->
+    IAmRoot = amIRoot(),
+    MnesiaSchemaExists = mnesia:system_info(use_dir),
     case IsUsingMnesia of 
-	true ->
-            MnesiaStartupStatus = startMnesia(isUsingMnesia()),
-            if MnesiaStartupStatus == error ->
-                io:format("start: Error Mnesia did not start on ~w~n", [node()]),
-                halt();
-               true -> ok
-            end,
-            % "barrier": worker must be up before root creates mnesia schema
-            %io:format("~w sending root schema barrier1 ready~n", [node()]),
-            %rootPID(Names) ! {ready, self()},
-            % need to wait for schema to be created before starting mnesia
-            % receive message from root
-            %receive 
-            %    {ready, _Root} -> ok
-            %end,
-            %io:format("~w received schema barrier2 ready from root~n", [node()]),
-            mnesia:change_table_copy_type(schema, node(), disc_copies),
-            mnesia:add_table_copy(visited_state, node(), disc_copies),
-            ok;
+        true ->
+            case MnesiaSchemaExists of
+                false ->
+                    case IAmRoot of
+                        true -> createMnesiaTables();
+                        false -> attachToMnesiaTables();
+                        _Else -> ok
+                    end;
+                true -> mnesia:start(), ok;
+                _Else -> ok
+            end;
         _Else -> ok
     end.
 
