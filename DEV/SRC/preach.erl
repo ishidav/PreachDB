@@ -506,9 +506,9 @@ newstart() ->
     if IAmRoot -> io:format("I am root~n"); true -> ok end,
     io:format("My cwd is ~s~n", [element(2, file:get_cwd())]),
     {HostList,Nhosts} = hosts(),
-    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    {NamesList, P} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(X) -> io:format("~w~n", [X]) end, NamesList),
-    Names = dict:from_list(lists:zip(lists:seq(1, Nhosts), NamesList)),
+    Names = dict:from_list(lists:zip(lists:seq(1, length(NamesList)), NamesList)),
     %% when sending messages, use {PID, pruserX@node} ! Message
     %% might want to register(pruserX, self()) so don't need to know PIDs
     %% Names should just be where nodes can send each other messages
@@ -518,13 +518,46 @@ newstart() ->
     addMnesiaTables(IsUsingMnesia, list_to_atom("pruser0@" ++ atom_to_list(lists:nth(1, HostList)))),
     timer:sleep(4000),
     %mnesia:info(),
-    %% barrier here until all nodes up
-    %% if root wait for message from all others
-    %% else send root message
-    %% timer
-    %% call reach
-    %% end timer
-    %% print result
+
+    if IAmRoot ->
+           %% barrier here until all nodes up: wait for message from all others
+           Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
+           barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
+           T0 = now(),
+           sendStates(startstates(),Names),
+           NumSent = length(startstates()),
+
+           reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
+
+           io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
+           {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
+           Dur = timer:now_diff(now(), T0)*1.0e-6,
+           NumPurged = purgeRecQ(0),
+           deleteStateCache(isCaching()),
+
+           io:format("----------~n"),
+           io:format("REPORT:~n"),
+           io:format("\tTotal of ~w states visited~n", [NumStates]),
+           io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
+           io:format("\tExecution time: ~f seconds~n", [Dur]),
+           io:format("\tStates visited per second: ~w~n", [trunc(NumStates/Dur)]),
+           io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
+           IsCaching = isCaching(),
+           if IsCaching ->
+               io:format("\tTotal of ~w state-cache hits (average of ~w)~n", 
+		      [NumHits, trunc(NumHits/P)]);
+              true -> ok
+           end,
+           IsLB = isLoadBalancing(),
+           if IsLB ->
+               io:format("\tLoad balancing enabled~n");
+           true ->
+               io:format("\tLoad balancing disabled~n")
+           end;
+       true -> rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
+           reach([], null, Names, HashTable, {0,0},[],0,0),
+           io:format("PID ~w: Worker ~w is done~n", [self(), node()])
+    end,
     stopMnesia(IsUsingMnesia),
     io:format("----------~n"),
     done.
