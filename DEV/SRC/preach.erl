@@ -59,19 +59,7 @@ balanceTolerence() -> 10000 div 8.
 %%     
 %%----------------------------------------------------------------------
 createHashTable(IsUsingMnesia) ->
-
   if IsUsingMnesia ->
-
-    %TableName = visited_state,
-    %io:format("~w creating hash table ~w~n", [node(), TableName]),
-    %Status = mnesia:create_table(TableName, [{disc_copies, [node()]}, {local_content, true}, {attributes, record_info(fields, visited_state)}]),
-    %io:format("~w creating hash table ~w status ~w~n", [node(), TableName, Status]),
-    %mnesia:info(),
-    %lists:map(fun(Node) -> 
-    %              SlaveStatus = mnesia:add_table_copy(visited_state, Node, disc_copies),
-    %              io:format("add ~w to visited_state table status = ~w~n", [Node, SlaveStatus])
-    %          end, nodes()),
-    %TableName;
     visited_state;
    true -> bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB)
   end.
@@ -96,7 +84,7 @@ isMemberHashTable(Element, HashTable) ->
 	{atomic, []} ->
 	    false;
         _Else ->
-            %io:format("~w isMemberHashTable(~w, ~w) returned ~w~n", [node(), Element, HashTable, Else]),
+            %io:format("~w@~w isMemberHashTable(~w, ~w) returned ~w~n", [getSname(), node(), Element, HashTable, Else]),
             false
     end;
    true -> 
@@ -109,11 +97,11 @@ isMemberHashTable(Element, HashTable) ->
   end.
 
 %%----------------------------------------------------------------------
-%% Function: addElemToHashTable/2
+%% Function: addElemToHashTable/3
 %% Purpose : Add a state to the hash table
-%%           
 %%               
 %% Args    :  Element is the state that we want to add
+%%           OutstandingAcks is the number of ACKs left
 %%           HashTable is the name of the hash table returned by
 %%           createHashTable
 %%
@@ -121,17 +109,45 @@ isMemberHashTable(Element, HashTable) ->
 %%           bloom filter will return a record type; 
 %%     
 %%----------------------------------------------------------------------
-addElemToHashTable(Element, HashTable)->
+addElemToHashTable(Element, OutstandingAcks, HashTable)->
   IsUsingMnesia = isUsingMnesia(),
   if IsUsingMnesia ->
     % massage Element into correct record type (table name is first element)
-    Record = #visited_state{state = Element, processed = false},
+    Record = #visited_state{state = Element, outstandingacks = OutstandingAcks},
     case mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end) of
         {atomic, _} -> ok;
-        Else -> %io:format("~w addElemToHashTable(~w, ~w) returned ~w~n", [node(), Element, HashTable, Else]),
+        Else -> %io:format("~w@~w addElemToHashTable(~w, ~w, ~w) returned ~w~n", [getSname(), node(), Element, OutstandingAcks, HashTable, Else]),
                 Else
     end;
    true -> bloom:add(Element,HashTable)
+  end.
+
+%%----------------------------------------------------------------------
+%% Function: readHashTable/2
+%% Purpose : Reads the state value (ACKs) in the hash table
+%%               
+%% Args    : Element is the state that we want to read
+%%           HashTable is the name of the hash table returned by
+%%           createHashTable
+%%
+%% Returns : integer number of ACKs or ok
+%%     
+%%----------------------------------------------------------------------
+readHashTable(Element, HashTable) ->
+  IsUsingMnesia = isUsingMnesia(),
+  if IsUsingMnesia ->
+    case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
+	{atomic, [X | _Y]} ->
+	     {_, _, Acks} = X,
+	     Acks;
+	{atomic, []} ->
+	    ok;
+        _Else ->
+            %io:format("~w@~w readHashTable(~w, ~w) returned ~w~n", [getSname(), node(), Element, HashTable, Else]),
+            ok
+    end;
+   true -> 
+    ok
   end.
 
 %%----------------------------------------------------------------------
@@ -452,7 +468,7 @@ start() ->
 
     T0 = now(),      
 
-    sendStates(startstates(),Names),
+    sendStates(startstates(), null, Names),
     NumSent = length(startstates()),
 
     reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
@@ -524,7 +540,7 @@ newstart() ->
            Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
            barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
            T0 = now(),
-           sendStates(startstates(),Names),
+           sendStates(startstates(), null, Names),
            NumSent = length(startstates()),
 
            reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
@@ -670,26 +686,29 @@ exitHandler(Pid,Reason) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/2
+%% Function: sendStates/3
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%		
 %% Args    : First is the state we're currently sending
 %%		Rest are the rest of the states to send
+%%		Parent is the parent of this set of states, and is used
+%%		in ACKs back to this node
 %%		Names is a list of PIDs
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(States, Names) -> 
+sendStates(States, Parent, Names) -> 
+    Me = {list_to_atom(getSname()), node()},
     StateCaching = isCaching(),
     if StateCaching  ->
-	    sendStates(caching,States, Names, 0);
+	    sendStates(caching,States, Parent, Me, Names, 0);
        true ->
-	    sendStates(nocaching, States, Names, 0)
+	    sendStates(nocaching, States, Parent, Me, Names, 0)
     end.
    
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/4 (State Caching)
+%% Function: sendStates/6 (State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%           DOCUMENT: Explain how state caching works		
 %%
@@ -700,16 +719,16 @@ sendStates(States, Names) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(caching, [], _Names, NumSent) ->
+sendStates(caching, [], _Parent, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(caching, [First | Rest], Names, NumSent) ->
+sendStates(caching, [First | Rest], Parent, Me, Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
     CacheLookup = stateCacheLookup(CacheIndex),
     CompactedState = hashState2Int(First),
     WasSent = if Owner == self() -> % my state - send, do not cache
-		      Owner ! {compressState(First), state},
+		      Owner ! {compressState(First), Parent, Me, state},
 		      1;
 		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == CompactedState -> %First -> 
 			% not my state, in cache - do not send
@@ -717,14 +736,14 @@ sendStates(caching, [First | Rest], Names, NumSent) ->
 		      0;
 		 true -> % not my state, not in cache - send and cache
 		      stateCacheInsert(CacheIndex, hashState2Int(First)),
-		      Owner ! {compressState(First), state},
+		      Owner ! {compressState(First), Parent, Me, state},
 		      1
 	      end,
-    sendStates(caching, Rest, Names, NumSent + WasSent);
+    sendStates(caching, Rest, Parent, Me, Names, NumSent + WasSent);
 
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/4 (NO State Caching)
+%% Function: sendStates/6 (NO State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%              
 %% Args    : First is the state we're currently sending
@@ -734,13 +753,13 @@ sendStates(caching, [First | Rest], Names, NumSent) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(nocaching, [], _Names, NumSent) ->
+sendStates(nocaching, [], _Parent, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(nocaching, [First | Rest], Names, NumSent) ->
+sendStates(nocaching, [First | Rest], Parent, Me, Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
-    Owner ! {compressState(First), state},
-    sendStates(nocaching, Rest, Names, NumSent + 1).
+    Owner ! {compressState(First), Parent, Me, state},
+    sendStates(nocaching, Rest, Parent, Me, Names, NumSent + 1).
 
 %%----------------------------------------------------------------------
 %% Function: sendExtraStates/3 
@@ -868,8 +887,10 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 		profiling(0, 0, NumSent, NumRecd, Count, QLen),
 	    CurState = decompressState(FirstState),
 	    NewStates = transition(CurState),
+	    % add to HT (and # children as ACKs)
+	    addElemToHashTable(FirstState, length(NewStates), HashTable),
 
-		ThisNumSent = sendStates(NewStates, Names),
+		ThisNumSent = sendStates(NewStates, FirstState, Names),
 	%	io:format("An out-degree of::~w~n", [ThisNumSent]),
 		%ThisNumSent = 0,
 
@@ -879,9 +900,6 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
-
-            % remove the state from the Mnesia state queue
-            delElemFromStateQueue(isUsingMnesia(), FirstState, state_queue),
 
 		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, 
 								HashTable, [],0, {RestStates, QLen-1} ),
@@ -897,7 +915,7 @@ reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
     % if mnesia check if anything in state queue, otherwise do rest of function
     case firstOfStateQueue(isUsingMnesia(), state_queue) of
         ok ->
-            NewNumSent = NumSent, % + sendStates(NewStates,Names),
+            NewNumSent = NumSent,
             TableSize = Count,
             Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
 							HashTable, [],0, {[],0}),
@@ -993,23 +1011,39 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 %%			OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
-checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates,NumStates, {CurQ, CurQLen}) ->
-    IsRoot = rootPID(Names) == self(),
+checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen}) ->
+    IsRoot = amIRoot(),
     Timeout = if IsTimeout-> if IsRoot -> timeoutTime(); true -> infinity end;
 				 true -> 0 end,
     
 	receive
-	{State, state} ->
-	    case isMemberHashTable(State,HashTable) of 
+	{State, Parent, Sender, state} ->
+	    case isMemberHashTable(State, HashTable) of 
 		true ->
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  NewStates, NumStates,{CurQ, CurQLen});
 		false ->
-		    addElemToHashTable(State, HashTable),
+	            addElemToHashTable(State, false, HashTable),
                     addElemToStateQueue(isUsingMnesia(), State, state_queue, 0),
+                    Sender ! {Parent, ack},
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
 	    end;
+
+	{Parent, ack} ->  % received an ACK for Parent; requires Parent to be send along with State in sendStates()
+	    if Parent /= null ->
+	        OutstandingAcks = readHashTable(Parent, HashTable),
+	        if is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
+	            addElemToHashTable(Parent, OutstandingAcks-1, HashTable),
+	            if OutstandingAcks-1 == 0 ->
+	                delElemFromStateQueue(isUsingMnesia(), Parent, state_queue);
+	               true -> ok
+	            end;
+	           true -> ok
+	        end;
+               true -> ok
+	    end,
+	    checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen});
 
 	{State, extraState} ->
 			checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd},HashTable,

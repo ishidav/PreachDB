@@ -1,6 +1,6 @@
--record(visited_state, {state, processed}).
+-record(visited_state, {state, outstandingacks}).
 
--record(visited_state_with_degs, {state, processed, indeg, outdeg}).
+-record(visited_state_with_degs, {state, outstandingacks, indeg, outdeg}).
 
 -record(state_queue, {state, order}).
 
