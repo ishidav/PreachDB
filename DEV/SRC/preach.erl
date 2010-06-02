@@ -1020,6 +1020,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	{State, Parent, Sender, state} ->
 	    case isMemberHashTable(State, HashTable) of 
 		true ->
+                    Sender ! {Parent, ack},
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  NewStates, NumStates,{CurQ, CurQLen});
 		false ->
