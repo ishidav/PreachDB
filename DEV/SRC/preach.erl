@@ -97,7 +97,7 @@ isMemberHashTable(Element, HashTable) ->
   end.
 
 %%----------------------------------------------------------------------
-%% Function: addElemToHashTable/3
+%% Function: addElemToHashTable/4
 %% Purpose : Add a state to the hash table
 %%               
 %% Args    :  Element is the state that we want to add
@@ -109,14 +109,14 @@ isMemberHashTable(Element, HashTable) ->
 %%           bloom filter will return a record type; 
 %%     
 %%----------------------------------------------------------------------
-addElemToHashTable(Element, OutstandingAcks, HashTable)->
+addElemToHashTable(Element, OutstandingAcks, SeqNo, HashTable)->
   IsUsingMnesia = isUsingMnesia(),
   if IsUsingMnesia ->
     % massage Element into correct record type (table name is first element)
-    Record = #visited_state{state = Element, outstandingacks = OutstandingAcks},
+    Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = SeqNo},
     case mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end) of
         {atomic, _} -> ok;
-        Else -> %io:format("~w@~w addElemToHashTable(~w, ~w, ~w) returned ~w~n", [getSname(), node(), Element, OutstandingAcks, HashTable, Else]),
+        Else -> %io:format("~w@~w addElemToHashTable(~w, ~w, ~w, ~w) returned ~w~n", [getSname(), node(), Element, OutstandingAcks, SeqNo, HashTable, Else]),
                 Else
     end;
    true -> bloom:add(Element,HashTable)
@@ -138,7 +138,7 @@ readHashTable(Element, HashTable) ->
   if IsUsingMnesia ->
     case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
 	{atomic, [X | _Y]} ->
-	     {_, _, Acks} = X,
+	     {_, _, Acks, _} = X,
 	     Acks;
 	{atomic, []} ->
 	    ok;
@@ -149,6 +149,102 @@ readHashTable(Element, HashTable) ->
    true -> 
     ok
   end.
+
+%%----------------------------------------------------------------------
+%% Function: addElemToHashTableAndStateQueue/4
+%% Purpose : Add the element to the Mnesia persisted hash table and 
+%%              state queue.  Use this when we first receive the state
+%%              and before we expand it.  Writes to both atomically.
+%% Args    : boolean, State, atom table name, atom table name
+%% Returns : ok or error
+%%     
+%%----------------------------------------------------------------------
+addElemToHashTableAndStateQueue(IsUsingMnesia, Element, HashTable, StateQueue) ->
+    if IsUsingMnesia ->
+        % massage Element into correct record type (table name is first element)
+        HTRecord = #visited_state{state = Element, outstandingacks = false, seqno = 0},
+        SQRecord = #state_queue{state = Element, order = 0},
+        case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write), mnesia:write(StateQueue, SQRecord, write) end) of
+            {atomic, _} -> ok;
+            Else -> io:format("~w addElemToHashTableAndStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
+                Else
+        end;
+       true -> bloom:add(Element,HashTable)
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: updateElemInHashTable/4
+%% Purpose : Add a state to the hash table
+%%               
+%% Args    :  Element is the state that we want to add
+%%           OutstandingAcks is the number of ACKs left
+%%           HashTable is the name of the hash table returned by
+%%           createHashTable
+%%
+%% Returns : a variable which type depends on the implementation, eg, 
+%%           bloom filter will return a record type; mnesia table 
+%%           returns the new ACK sequence number
+%%     
+%%----------------------------------------------------------------------
+updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
+  if IsUsingMnesia ->
+    case mnesia:transaction(fun() -> 
+        case mnesia:read(HashTable, Element, write) of
+          [] -> Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = 1},
+                mnesia:write(HashTable, Record, write),
+                1;
+          [X] -> {_, _, _, S} = X,
+                Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = S+1},
+                mnesia:write(HashTable, Record, write),
+                S+1
+        end
+      end) of
+        {atomic, R} -> R;
+        Else -> %io:format("~w updateElemInHashTable(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, OutstandingAcks, HashTable, Else]),
+                Else
+    end;
+   true -> bloom:add(Element,HashTable)
+  end.
+
+
+%%----------------------------------------------------------------------
+%% Function: decrementHashTableAcksOnZeroDelElemFromStateQueue/5
+%% Purpose : Decrements the ACKs outstanding for this element.  If ACKs
+%%              outstanding is 0 after doing this, delete the element
+%%              from the State Queue.
+%% Args    : boolean, State, atom table name, atom table name
+%% Returns : ok or error
+%%     
+%%----------------------------------------------------------------------
+decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, SeqNo, HashTable, StateQueue) ->
+    if IsUsingMnesia ->
+        if Element /= null ->
+            {OutstandingAcks, CurSeqNo} = case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
+                {atomic, [{_, _, Acks, S} | _Y]} -> {Acks, S};
+                _Else -> io:format("~w read Hash Table(~w) failed in decrementHashTableAcksOnZeroDelElemFromStateQueue~n", [node(), Element]), {false, false}
+            end,
+            if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
+                HTRecord = #visited_state{state = Element, outstandingacks = OutstandingAcks-1, seqno = CurSeqNo},
+                if OutstandingAcks-1 == 0 ->
+                    case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write), mnesia:delete(StateQueue, Element, write) end) of
+                      {atomic, _} -> ok;
+                      Else -> io:format("~w delElemFromStateQueue(~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Else]),
+                        Else
+                    end;
+                  true -> case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write) end) of
+                    {atomic, _} -> ok;
+                    Else -> io:format("~w decrementHashTableAcksOnZeroDelElemFromStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
+                      Else
+                    end
+                end;
+              SeqNo /= CurSeqNo -> ok;
+              not is_number(OutstandingAcks) -> io:format("~w received ACK for state ~w when HT ACKs outstanding was not a number~n", [node(), Element]), ok;
+              true -> io:format("~w received ACK for state ~w when ACKs outstanding ~w <= 0, CurSeqNo = ~w SeqNo = ~w~n", [node(), Element, OutstandingAcks, CurSeqNo, SeqNo]), ok
+            end;
+          true -> ok
+        end;
+      true -> ok
+    end.
 
 %%----------------------------------------------------------------------
 %% Function: createStateCache/1, deleteStateCache/1
@@ -468,7 +564,7 @@ start() ->
 
     T0 = now(),      
 
-    sendStates(startstates(), null, Names),
+    sendStates(startstates(), null, 1, Names),
     NumSent = length(startstates()),
 
     reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
@@ -540,12 +636,12 @@ newstart() ->
            Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
            barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
            T0 = now(),
-           sendStates(startstates(), null, Names),
+           sendStates(startstates(), null, 1, Names),
            NumSent = length(startstates()),
 
            reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
 
-           io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
+           io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
            {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
            Dur = timer:now_diff(now(), T0)*1.0e-6,
            NumPurged = purgeRecQ(0),
@@ -572,7 +668,7 @@ newstart() ->
            end;
        true -> rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
            reach([], null, Names, HashTable, {0,0},[],0,0),
-           io:format("PID ~w: Worker ~w is done~n", [self(), node()])
+           io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()])
     end,
     stopMnesia(IsUsingMnesia),
     io:format("----------~n"),
@@ -616,8 +712,8 @@ waitForTerm(PIDs, TotalStates, TotalHits, Cover) ->
     if Cover < length(PIDs) ->
 	    receive
 		{DiffPID, {NumStates, NumHits}, done} -> 
-		    io:format("PID ~w: worker thread ~w has reported " ++
-			      "termination~n", [self(), DiffPID]),%;
+		    io:format("~w PID ~w: worker thread ~w has reported " ++
+			      "termination~n", [node(), self(), DiffPID]),%;
 		    waitForTerm(PIDs,TotalStates + NumStates, 
 				TotalHits + NumHits, Cover +1);
 		{'EXIT', Pid, Reason } ->
@@ -674,7 +770,7 @@ purgeRecQ(Count) ->
 %%     
 %%----------------------------------------------------------------------
 exitHandler(Pid,Reason) ->
-    io:format("~w Received Exit from ~w w/ Reason ~w~n",[self(), Pid,Reason]),
+    io:format("~w ~w Received Exit from ~w w/ Reason ~w~n",[node(), self(), Pid,Reason]),
     if Reason =/= normal ->
 	    case net_kernel:connect(node(Pid)) of 
 		true -> ok;
@@ -686,29 +782,30 @@ exitHandler(Pid,Reason) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/3
+%% Function: sendStates/4
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%		
 %% Args    : First is the state we're currently sending
 %%		Rest are the rest of the states to send
 %%		Parent is the parent of this set of states, and is used
 %%		in ACKs back to this node
+%%		SeqNo is the ACK sequence number for this sending of states
 %%		Names is a list of PIDs
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(States, Parent, Names) -> 
+sendStates(States, Parent, SeqNo, Names) -> 
     Me = {list_to_atom(getSname()), node()},
     StateCaching = isCaching(),
     if StateCaching  ->
-	    sendStates(caching,States, Parent, Me, Names, 0);
+	    sendStates(caching,States, Parent, SeqNo, Me, Names, 0);
        true ->
-	    sendStates(nocaching, States, Parent, Me, Names, 0)
+	    sendStates(nocaching, States, Parent, SeqNo, Me, Names, 0)
     end.
    
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/6 (State Caching)
+%% Function: sendStates/7 (State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%           DOCUMENT: Explain how state caching works		
 %%
@@ -719,16 +816,16 @@ sendStates(States, Parent, Names) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(caching, [], _Parent, _Me, _Names, NumSent) ->
+sendStates(caching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(caching, [First | Rest], Parent, Me, Names, NumSent) ->
+sendStates(caching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
     CacheLookup = stateCacheLookup(CacheIndex),
     CompactedState = hashState2Int(First),
-    WasSent = if Owner == self() -> % my state - send, do not cache
-		      Owner ! {compressState(First), Parent, Me, state},
+    WasSent = if Owner == Me -> % my state - send, do not cache
+		      Owner ! {compressState(First), Parent, SeqNo, Me, state},
 		      1;
 		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == CompactedState -> %First -> 
 			% not my state, in cache - do not send
@@ -736,14 +833,14 @@ sendStates(caching, [First | Rest], Parent, Me, Names, NumSent) ->
 		      0;
 		 true -> % not my state, not in cache - send and cache
 		      stateCacheInsert(CacheIndex, hashState2Int(First)),
-		      Owner ! {compressState(First), Parent, Me, state},
+		      Owner ! {compressState(First), Parent, SeqNo, Me, state},
 		      1
 	      end,
-    sendStates(caching, Rest, Parent, Me, Names, NumSent + WasSent);
+    sendStates(caching, Rest, Parent, SeqNo, Me, Names, NumSent + WasSent);
 
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/6 (NO State Caching)
+%% Function: sendStates/7 (NO State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%              
 %% Args    : First is the state we're currently sending
@@ -753,13 +850,13 @@ sendStates(caching, [First | Rest], Parent, Me, Names, NumSent) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(nocaching, [], _Parent, _Me, _Names, NumSent) ->
+sendStates(nocaching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(nocaching, [First | Rest], Parent, Me, Names, NumSent) ->
+sendStates(nocaching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
-    Owner ! {compressState(First), Parent, Me, state},
-    sendStates(nocaching, Rest, Parent, Me, Names, NumSent + 1).
+    Owner ! {compressState(First), Parent, SeqNo, Me, state},
+    sendStates(nocaching, Rest, Parent, SeqNo, Me, Names, NumSent + 1).
 
 %%----------------------------------------------------------------------
 %% Function: sendExtraStates/3 
@@ -888,15 +985,15 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 	    CurState = decompressState(FirstState),
 	    NewStates = transition(CurState),
 	    % add to HT (and # children as ACKs)
-	    addElemToHashTable(FirstState, length(NewStates), HashTable),
+	    SeqNo = updateElemInHashTable(isUsingMnesia(), FirstState, length(NewStates), HashTable),
 
-		ThisNumSent = sendStates(NewStates, FirstState, Names),
+		ThisNumSent = sendStates(NewStates, FirstState, SeqNo, Names),
 	%	io:format("An out-degree of::~w~n", [ThisNumSent]),
 		%ThisNumSent = 0,
 
 	    EndFound = stateMatch(CurState,End),
 	    if EndFound ->
-		    io:format("=== End state ~w found by PID ~w ===~n", [End,self()]),
+		    io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
 		    rootPID(Names) ! end_found;
 	       true -> do_nothing
 	    end,
@@ -912,30 +1009,51 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
-    % if mnesia check if anything in state queue, otherwise do rest of function
-    case firstOfStateQueue(isUsingMnesia(), state_queue) of
-        ok ->
-            NewNumSent = NumSent,
-            TableSize = Count,
-            Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
-							HashTable, [],0, {[],0}),
-            if Ret == done ->
-	        done;
-               true ->
-	        {NewQ, NewNumRecd, NumStates} = Ret,
-	        reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
-            end;
-        State -> reach([State], End, Names, HashTable, {NumSent, NumRecd}, [], Count, 1)
+    if Count > 3 -> timer:sleep(1000); % delay to slow spamming the slow nodes
+      true -> ok
+    end,
+    % check messages
+    Ret = checkMessageQ(true, Count, Names, {NumSent, NumRecd}, HashTable, [],0, {[],0}),
+    if Ret == done -> done;
+      true -> {Q, NewNumRecd, NumStates} = Ret,
+        % if mnesia, check if anything in state queue
+        case firstOfStateQueue(isUsingMnesia(), state_queue) of
+          ok -> NewQ = Q;
+          State -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), State]),
+            NewQ = [State | Q]
+        end,
+        reach(NewQ, End, Names, HashTable, {NumSent, NewNumRecd},[], Count, NumStates)
     end.
+
+    % if mnesia, check if anything in state queue
+%    case firstOfStateQueue(isUsingMnesia(), state_queue) of
+%        ok ->
+%            NewNumSent = NumSent,
+%            TableSize = Count,
+%            Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
+%							HashTable, [],0, {[],0}),
+%            if Ret == done ->
+%	        done;
+%               true ->
+%	        {NewQ, NewNumRecd, NumStates} = Ret,
+%	        reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
+%            end;
+%        State -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), State]),
+%            if Count > 3 -> timer:sleep(1000); % delay to slow spamming slow nodes
+%              true -> ok
+%            end,
+%            reach([State], End, Names, HashTable, {NumSent, NumRecd}, [], Count, 1)
+%    end.
 
 
 sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
 
 sendQSize(Names, Index, QSize, StateQ, {NumSent, NumRecd}) ->
 	Owner = dict:fetch(Index, Names),
-	if Owner /= self() ->
-	%	io:format("PID ~w: Reporting a QSize of ~w~n",[self(),NewQSize]),
-		Owner ! {QSize, self(), myQSize},
+        Me = {list_to_atom(getSname()), node()},
+	if Owner /= Me ->
+	%	io:format("~w PID ~w: Reporting a QSize of ~w~n",[node(), self(),NewQSize]),
+		Owner ! {QSize, Me, myQSize},
 		sendQSize(Names, Index-1, QSize,StateQ,{NumSent,NumRecd});
 	true -> do_nothing
 	end,
@@ -973,13 +1091,14 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
     if (Count rem 10000)  == 0 -> 
 	    io:format("VS=~w,  NS=~w, NR=~w" ++ 
-		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB, |InQ|=~w, |StateQ|=~w, Time=~w->~w~n", 
+		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB, |InQ|=~w, |StateQ|=~w, Time=~w-> ~w PID ~w~n", 
 		      [Count, NumSent, NumRecd,
 		       erlang:memory(system)/1048576, 
 		       erlang:memory(processes)/1048576,  	
 		       element(2,process_info(self(),message_queue_len)), 
 				QLen,
 				element(2,now())+element(3,now())*1.0e-6,
+		       node(),
 		       self()]);
 
        true -> ok
@@ -1017,33 +1136,23 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 				 true -> 0 end,
     
 	receive
-	{State, Parent, Sender, state} ->
+	{State, Parent, SeqNo, Sender, state} ->
 	    case isMemberHashTable(State, HashTable) of 
 		true ->
-                    Sender ! {Parent, ack},
+                    Sender ! {Parent, SeqNo, ack},
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  NewStates, NumStates,{CurQ, CurQLen});
 		false ->
-	            addElemToHashTable(State, false, HashTable),
-                    addElemToStateQueue(isUsingMnesia(), State, state_queue, 0),
-                    Sender ! {Parent, ack},
+	            addElemToHashTableAndStateQueue(isUsingMnesia(), State, HashTable, state_queue),
+	            %addElemToHashTable(State, false, 0, HashTable),
+                    %addElemToStateQueue(isUsingMnesia(), State, state_queue, 0), % this step and previous should be atomic
+                    Sender ! {Parent, SeqNo, ack},
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
 	    end;
 
-	{Parent, ack} ->  % received an ACK for Parent; requires Parent to be send along with State in sendStates()
-	    if Parent /= null ->
-	        OutstandingAcks = readHashTable(Parent, HashTable),
-	        if is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
-	            addElemToHashTable(Parent, OutstandingAcks-1, HashTable),
-	            if OutstandingAcks-1 == 0 ->
-	                delElemFromStateQueue(isUsingMnesia(), Parent, state_queue);
-	               true -> ok
-	            end;
-	           true -> ok
-	        end;
-               true -> ok
-	    end,
+	{Parent, SeqNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
+	    decrementHashTableAcksOnZeroDelElemFromStateQueue(isUsingMnesia(), Parent, SeqNo, HashTable, state_queue),
 	    checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen});
 
 	{State, extraState} ->
@@ -1053,8 +1162,8 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	{OtherSize, OtherPID, myQSize} ->
 		LB = OtherSize + balanceTolerence(),
 		{NewQ, NewQLen} = if CurQLen > LB ->
-			io:format("PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", 
-						[self(),CurQLen,OtherSize, 
+			io:format("~w PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", 
+						[node(), self(),CurQLen,OtherSize, 
 						(CurQLen-OtherSize) div balanceRatio(), 
 						OtherPID]),
 			T1 = sendExtraStates(OtherPID, CurQ, (CurQLen - OtherSize) div balanceRatio()),
@@ -1092,7 +1201,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 		if Timeout == 0 ->  % non-blocking case, return 
 				{NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
 		   true -> % otherwise, root polls for termination
-		    io:format("PID ~w: Root has timed out, polling workers now...~n", [self()]),
+		    io:format("~w PID ~w: Root has timed out, polling workers now...~n", [node(), self()]),
 		    CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
 			CheckSum = element(1,CommAcc) - element(2,CommAcc),
 			if CheckSum == 0 ->	% time to die
@@ -1100,8 +1209,8 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 				terminateAll(tl(dictToList(Names))),
 				terminateMe(BigListSize, rootPID(Names));
 				true ->	% resume other processes and wait again for new states or timeout
-					io:format("PID ~w: unusual, checksum is ~w, will wait " ++ 
-							  "again for timeout...~n", [self(),CheckSum]),
+					io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
+							  "again for timeout...~n", [node(), self(),CheckSum]),
 					resumeWorkers(tl(dictToList(Names))),
 					checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, 
 								  HashTable, NewStates,NumStates, {CurQ,CurQLen})
@@ -1120,13 +1229,13 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 pollWorkers([], _) ->
     {0,0};
 
-pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) when ThisPID == self() ->
+pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) when ThisPID == {pruser0, node()} ->
     {S, R} = pollWorkers(Rest, {RootSent, RootRecd}),
-    io:format("PID ~w: root CommAcc is {~w,~w}~n", [self(),RootSent,RootRecd]),
+    io:format("~w PID ~w: root CommAcc is {~w,~w}~n", [node(), self(),RootSent,RootRecd]),
     {S+RootSent, R+RootRecd};
 
 pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
-    io:format("PID ~w: sending pause signal to PID ~w~n", [self(),ThisPID]),
+    io:format("~w PID ~w: sending pause signal to PID ~w~n", [node(), self(),ThisPID]),
     ThisPID ! pause,
     {S, R} = pollWorkers(Rest, {RootSent, RootRecd}),
     receive
@@ -1134,8 +1243,8 @@ pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
 	    exitHandler(Pid,Reason);
 
 	{ThisSent, ThisRecd, poll} ->
-	    io:format("PID ~w: Got a worker CommAcc of {~w,~w}~n", 
-		      [self(),ThisSent,ThisRecd]),
+	    io:format("~w PID ~w: Got a worker CommAcc of {~w,~w}~n", 
+		      [node(), self(),ThisSent,ThisRecd]),
 	    {S+ThisSent, R+ThisRecd}
     end.
 %%----------------------------------------------------------------------
@@ -1160,13 +1269,13 @@ resumeWorkers(PIDs) ->
 terminateMe(NumStatesVisited, RootPID) ->
     IsCaching = isCaching(),
     if IsCaching ->
-	    io:format("PID ~w: was told to die; visited ~w unique states; ~w " ++ 
-		      "state-cache hits~n", [self(), NumStatesVisited, getHitCount()]),
-	    RootPID ! {self(), {NumStatesVisited, getHitCount()}, done};
+	    io:format("~w PID ~w: was told to die; visited ~w unique states; ~w " ++ 
+		      "state-cache hits~n", [node(), self(), NumStatesVisited, getHitCount()]),
+	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, getHitCount()}, done};
        true ->
-	    io:format("PID ~w: was told to die; visited ~w unique states; ~n", 
-		      [self(), NumStatesVisited]),
-	    RootPID ! {self(), {NumStatesVisited, 0}, done}
+	    io:format("~w PID ~w: was told to die; visited ~w unique states; ~n", 
+		      [node(), self(), NumStatesVisited]),
+	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, 0}, done}
     end, 
     done.
 
@@ -1214,7 +1323,7 @@ after 60000 ->
         io:format("barrier: ERROR: Haven't got all ack after 60s... sending die"
                   ++ " to ~w~n",[PIDs]),
         lists:map(fun(X) -> X ! die end, PIDs)    ,
-        io:format("checkAck: ~w halting for now",[self()]),
+        io:format("checkAck: ~w ~w halting for now",[node(), self()]),
         halt()
 end.
 
