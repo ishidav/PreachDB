@@ -39,7 +39,7 @@
 
 -module(n7_peterson_modified).
 %-export([start/3,startWorker/1]).
--export([start/0, autoStart/0, startWorker/1]).
+-export([start/0, autoStart/0]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 
 stateToBits(State) -> State.

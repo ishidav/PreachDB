@@ -38,7 +38,7 @@
 %---------------Manually added-------------------%
 
 -module(n5_peterson_modified).
--export([start/0, autoStart/0, startWorker/1]).
+-export([start/0, autoStart/0]).
 %-export([start/3, startWorker/1]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 

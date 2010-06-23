@@ -7,7 +7,7 @@
 %
 %  Synopsis                   [Main erl module for Parallel Model Checking]
 %
-%  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+%  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA, VALERIE ISHIDA]
 %
 %  Copyright                  [Copyright (C) 2009 University of British Columbia]
 % 
@@ -78,22 +78,12 @@ createHashTable(IsUsingMnesia) ->
 isMemberHashTable(Element, HashTable) ->
   IsUsingMnesia = isUsingMnesia(),
   if IsUsingMnesia ->
-    case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
-	{atomic, [_X | _Y]} ->
-	     true;
-	{atomic, []} ->
-	    false;
-        _Else ->
-            %io:format("~w@~w isMemberHashTable(~w, ~w) returned ~w~n", [getSname(), node(), Element, HashTable, Else]),
-            false
-    end;
-   true -> 
-    case bloom:member(Element,HashTable) of
-        true ->
-             true;
-        false ->
-            false
-    end
+      case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
+        {atomic, [_X | _]} -> true;
+        {atomic, []} -> false;
+        _Else -> false
+      end;
+    true -> bloom:member(Element,HashTable)
   end.
 
 %%----------------------------------------------------------------------
@@ -124,7 +114,7 @@ addElemToHashTable(Element, OutstandingAcks, SeqNo, HashTable)->
 
 %%----------------------------------------------------------------------
 %% Function: readHashTable/2
-%% Purpose : Reads the state value (ACKs) in the hash table
+%% Purpose : Reads the state value (ACKs and SeqNo) in the hash table
 %%               
 %% Args    : Element is the state that we want to read
 %%           HashTable is the name of the hash table returned by
@@ -137,9 +127,9 @@ readHashTable(Element, HashTable) ->
   IsUsingMnesia = isUsingMnesia(),
   if IsUsingMnesia ->
     case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
-	{atomic, [X | _Y]} ->
-	     {_, _, Acks, _} = X,
-	     Acks;
+	{atomic, [X | _]} ->
+	     {_, _, Acks, SeqNo} = X,
+	     {Acks, SeqNo};
 	{atomic, []} ->
 	    ok;
         _Else ->
@@ -164,9 +154,11 @@ addElemToHashTableAndStateQueue(IsUsingMnesia, Element, HashTable, StateQueue) -
         % massage Element into correct record type (table name is first element)
         HTRecord = #visited_state{state = Element, outstandingacks = false, seqno = 0},
         SQRecord = #state_queue{state = Element, order = 0},
-        case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write), mnesia:write(StateQueue, SQRecord, write) end) of
+        case mnesia:transaction(fun() -> 
+                                mnesia:write(HashTable, HTRecord, write), 
+                                mnesia:write(StateQueue, SQRecord, write) end) of
             {atomic, _} -> ok;
-            Else -> io:format("~w addElemToHashTableAndStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
+            Else -> %io:format("~w addElemToHashTableAndStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
                 Else
         end;
        true -> bloom:add(Element,HashTable)
@@ -190,11 +182,13 @@ updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
   if IsUsingMnesia ->
     case mnesia:transaction(fun() -> 
         case mnesia:read(HashTable, Element, write) of
-          [] -> Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = 1},
+          [] -> Record = #visited_state{state = Element, 
+                         outstandingacks = OutstandingAcks, seqno = 1},
                 mnesia:write(HashTable, Record, write),
                 1;
           [X] -> {_, _, _, S} = X,
-                Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = S+1},
+                Record = #visited_state{state = Element, 
+                         outstandingacks = OutstandingAcks, seqno = S+1},
                 mnesia:write(HashTable, Record, write),
                 S+1
         end
@@ -216,35 +210,163 @@ updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
 %% Returns : ok or error
 %%     
 %%----------------------------------------------------------------------
-decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, SeqNo, HashTable, StateQueue) ->
+decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, 
+                                         SeqNo, HashTable, StateQueue) ->
     if IsUsingMnesia ->
         if Element /= null ->
-            {OutstandingAcks, CurSeqNo} = case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
+            {OutstandingAcks, CurSeqNo} = case mnesia:transaction(fun() -> 
+                                   mnesia:read(HashTable, Element) end) of 
                 {atomic, [{_, _, Acks, S} | _Y]} -> {Acks, S};
-                _Else -> io:format("~w read Hash Table(~w) failed in decrementHashTableAcksOnZeroDelElemFromStateQueue~n", [node(), Element]), {false, false}
+                _Else -> %io:format("~w read Hash Table(~w) failed in decrementHashTableAcksOnZeroDelElemFromStateQueue~n", [node(), Element]), 
+                  {false, false}
             end,
-            if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
+            if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso 
+                    OutstandingAcks > 0 ->
                 HTRecord = #visited_state{state = Element, outstandingacks = OutstandingAcks-1, seqno = CurSeqNo},
                 if OutstandingAcks-1 == 0 ->
-                    case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write), mnesia:delete(StateQueue, Element, write) end) of
+                    case mnesia:transaction(fun() -> 
+                          mnesia:write(HashTable, HTRecord, write), 
+                          mnesia:delete(StateQueue, Element, write) end) of
                       {atomic, _} -> ok;
-                      Else -> io:format("~w delElemFromStateQueue(~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Else]),
+                      Else -> %io:format("~w delElemFromStateQueue(~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Else]),
                         Else
                     end;
-                  true -> case mnesia:transaction(fun() -> mnesia:write(HashTable, HTRecord, write) end) of
+                  true -> case mnesia:transaction(fun() -> 
+                              mnesia:write(HashTable, HTRecord, write) end) of
                     {atomic, _} -> ok;
-                    Else -> io:format("~w decrementHashTableAcksOnZeroDelElemFromStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
+                    Else -> %io:format("~w decrementHashTableAcksOnZeroDelElemFromStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, HashTable, StateQueue, Else]),
                       Else
                     end
                 end;
               SeqNo /= CurSeqNo -> ok;
-              not is_number(OutstandingAcks) -> io:format("~w received ACK for state ~w when HT ACKs outstanding was not a number~n", [node(), Element]), ok;
-              true -> io:format("~w received ACK for state ~w when ACKs outstanding ~w <= 0, CurSeqNo = ~w SeqNo = ~w~n", [node(), Element, OutstandingAcks, CurSeqNo, SeqNo]), ok
+              not is_number(OutstandingAcks) -> io:format("~w received ACK for state ~w when HT ACKs outstanding was not a number~n", [node(), Element]), 
+                ok;
+              true -> io:format("~w received ACK for state ~w when ACKs outstanding ~w <= 0, CurSeqNo = ~w SeqNo = ~w~n", [node(), Element, OutstandingAcks, CurSeqNo, SeqNo]), 
+                ok
             end;
           true -> ok
         end;
       true -> ok
     end.
+
+%%----------------------------------------------------------------------
+%% Function: createMnesiaTables/0
+%% Purpose : Create Mnesia tables, assumes schema is already created
+%%          and set to disc
+%% Args    : 
+%% Returns : ok or {error, Reason}
+%%     
+%%----------------------------------------------------------------------
+createMnesiaTables() ->
+    ce_db:create([  {visited_state, [{disc_copies, [node()]}, 
+    {local_content, true}, {attributes, record_info(fields, visited_state)}]},
+                    {state_queue, [{disc_copies, [node()]}, 
+    {local_content, true}, {attributes, record_info(fields, state_queue)}]}]),
+    timer:sleep(1000),
+    ok.
+
+%%----------------------------------------------------------------------
+%% Function: attachToMnesiaTables/1
+%% Purpose : Have slaves attach to root's Mnesia schema and tables
+%% Args    : node
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+attachToMnesiaTables(RootNode) ->
+    timer:sleep(2000),
+    ce_db:connect(RootNode, [], [visited_state, state_queue]).
+
+%%----------------------------------------------------------------------
+%% Function: addMnesiaTables/2
+%% Purpose : Will create table if root or try to connect to root's table
+%% Args    : boolean, node
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+addMnesiaTables(IsUsingMnesia, RootNode) ->
+    IAmRoot = amIRoot(),
+    MnesiaSchemaExists = mnesia:system_info(use_dir),
+    case IsUsingMnesia of 
+        true ->
+            case MnesiaSchemaExists of
+                false ->
+                    case IAmRoot of
+                        true -> createMnesiaTables();
+                        false -> attachToMnesiaTables(RootNode);
+                        _Else -> ok
+                    end;
+                true -> mnesia:start(), ok;
+                _Else -> ok
+            end;
+        _Else -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: addElemToStateQueue/4
+%% Purpose : add the element to the Mnesia persisted state queue
+%% Args    : boolean, State, atom table name, int
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
+    if IsUsingMnesia ->
+        % massage Element into correct record type (table name is first element)
+        Record = #state_queue{state = Element, order = Order},
+        case mnesia:transaction(fun() -> mnesia:write(StateQueue, Record, write) end) of
+            {atomic, _} -> ok;
+            Else -> Else
+        end;
+       true -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: delElemFromStateQueue/3
+%% Purpose : remove the element to the Mnesia persisted state queue
+%% Args    : boolean, State, atom table name
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
+    if IsUsingMnesia ->
+        case mnesia:transaction(fun() -> mnesia:delete(StateQueue, Element, write) end) of
+            {atomic, _} -> ok;
+            Else -> Else
+        end;
+       true -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: firstOfStateQueue/2
+%% Purpose : check if anything in the state queue, if so, return it
+%% Args    : boolean, atom table name
+%% Returns : State or ok
+%%     
+%%----------------------------------------------------------------------
+firstOfStateQueue(IsUsingMnesia, StateQueue) ->
+    if IsUsingMnesia ->
+        case mnesia:transaction(fun() -> mnesia:first(StateQueue) end) of
+            {atomic, '$end_of_table'} -> ok; % empty state queue
+            {atomic, State} -> State;
+            _Else -> ok
+        end;
+       true -> ok
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: stopMnesia/1
+%% Purpose : Stops the Mnesia DBMS
+%% Args    : boolean
+%% Returns : ok
+%%     
+%%----------------------------------------------------------------------
+stopMnesia(IsUsingMnesia) ->
+    case IsUsingMnesia of 
+	true ->
+	    mnesia:stop(),
+	    ok;
+	false->
+	    ok
+    end.  
 
 %%----------------------------------------------------------------------
 %% Function: createStateCache/1, deleteStateCache/1
@@ -387,70 +509,6 @@ read_inFile(InFile,HostList,SLine) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: slaves/2 
-%% Purpose : Iterates over hosts and starts them as slaves (erlang terminology). 
-%%           
-%%
-%% Args    : Hosts is the list of hosts 
-%%           CWD is the current directory of the master node 
-%%           NHosts is the number of hosts 
-%%
-%% Returns : 
-%%     
-%%----------------------------------------------------------------------
-slaves(_HostList, _CWD, 1) -> 
-    [node()];
-slaves([Host|Hosts], CWD, NHosts) ->
-    io:format("slaves Host = ~w~n", [Host]),
-    Args = "+h 100000 -setcookie " ++ atom_to_list(erlang:get_cookie()) ++
-	" -pa " ++ CWD ++ " -pa " ++ CWD ++ "/ebin " ++  "-smp enable",
-    NodeName = string:concat("pruser", integer_to_list(NHosts)),
-    
-    % Pass cache option to workers 
-    IsCaching = isCaching(),
-    if IsCaching -> 
-	    Args0 = Args ++ " -statecaching"; 
-       true -> 
-	    Args0 = Args 
-    end,
-    % Pass external profile option to workers
-    IsExtProfile = isExtProfiling(),
-    if IsExtProfile -> 
-	    Args1 = Args0 ++ " -nprofile"; 
-       true -> 
-	    Args1 = Args0 
-    end,
-    % Pass mnesia dir option to workers
-    IsUsingMnesia = isUsingMnesia(),
-    if IsUsingMnesia -> 
-            MyHost = list_to_atom(lists:nth(2, string:tokens(atom_to_list(node()), "@"))),
-            if MyHost == Host ->
-	        MyMnesiaDir = "'\"" ++ string:sub_string(getMnesiaDir(), 2, string:len(getMnesiaDir())-1) ++ integer_to_list(NHosts) ++ "\"'";
-               true ->
-	        MyMnesiaDir = "\\'\\\"" ++ string:sub_string(getMnesiaDir(), 2, string:len(getMnesiaDir())-1) ++ integer_to_list(NHosts) ++ "\\\"\\'"
-            end,
-	    io:format("~s@~s Starting Mnesia in dir ~s.~n",[NodeName, Host, MyMnesiaDir]),  %% comment this out when done
-	    Args2 = Args1 ++ " -mnesia dir " ++ MyMnesiaDir; 
-       true -> 
-	    Args2 = Args1 
-    end,
-
-    SchemaNames = case slave:start_link(Host, NodeName, Args2) of
-	{ok, Node} ->
-	    io:format("Erlang node started = [~p]~n", [Node]),
-	    slaves(Hosts, CWD, NHosts - 1);
-	{error,timeout} ->
-	    io:format("Could not connect to host ~w...Exiting~n",[Host]),
-	    halt();
-	{error,Reason} ->
-	    io:format("Could not start workers: Reason= ~w...Exiting~n",[Reason]),
-	    halt()
-    end,
-
-    [list_to_atom(NodeName ++ "@" ++ atom_to_list(Host) ) | SchemaNames].
-
-
-%%----------------------------------------------------------------------
 %% Function: compressState/1, decompressState/1, hashState2Int/1 
 %% Purpose : Translates state into some basic data-type 
 %%            	
@@ -483,126 +541,10 @@ hashState2Int(State) ->
 %% Returns : pid
 %%     
 %%----------------------------------------------------------------------
-rootPID(Names) -> dict:fetch(1,Names).  
-
-%%----------------------------------------------------------------------
-%% Function: setup/0
-%% Purpose : Automatically start the distributed erts, or statrt locally
-%%           if in local mode
-%%           
-%%            	
-%% Args    : Ordered dictionary of pids, where element 1 maps to the root
-%%          machine
-%%         
-%% Returns : pid
-%%     
-%%----------------------------------------------------------------------
-setup() ->
-    LocalMode = isLocalMode(),
-    if LocalMode  ->
-	    %% FMP should remove null param
-	    Names = initThreads([], 1, null, [], 0),
-	    Nhosts = 1;
-       true ->
-	    {HostList,Nhosts} = hosts(),
-	    {Status, CWD} = file:get_cwd(),
-	    if Status == error ->
-                    Names = null,
-		    Nhosts = 0,
-		    io:format("setup: Error Could not read current directory." ++"
-                               Erlang reason: '~w'. ",[CWD]),
-                       halt();
-	       true ->  
-		    SchemaNames = slaves(lists:reverse(tl(HostList)), CWD, Nhosts),
-		    %FMP should remove null param
-		    Names = initThreads([], Nhosts, null,HostList, Nhosts)
-	    end
-    end,
-    {Names, Nhosts}.
+rootPID(Names) -> dict:fetch(1,Names).
 
 %%----------------------------------------------------------------------
 %% Function: start/0
-%% Purpose : A timing wrapper for the parallel version of 
-%%				our model checker.
-%% Args    : P is the number of Erlang threads to use;
-%%			Start is a list of states to initialize the state queue;
-%% Returns :
-%%     
-%%----------------------------------------------------------------------
-start() ->
-    {Names, P} = setup(), 
-    startExternalProfiling(isExtProfiling()),
-    createStateCache(isCaching()),
-
-    IsUsingMnesia = isUsingMnesia(),
-    mnesia:start(), %startMnesia(IsUsingMnesia),
-    HashTable = createHashTable(IsUsingMnesia),
-
-    Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= self()],
-    % wait for others to add to schema
-    barrier(Others, lists:zip(Others, 
-			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
-
-
-    if IsUsingMnesia ->
-        DBNodes = nodes(),
-        lists:map(fun(X) ->
-                      ExtraNodesStatus = mnesia:add_table_copy(schema, X, ram_copies),
-                      io:format("~w setting ram schema for ~w status = ~w~n", [node(), X, ExtraNodesStatus])
-                  end, DBNodes),
-        mnesia:change_table_copy_type (schema, node (), disc_copies),
-        mnesia:wait_for_tables([schema], 20000),
-        createMnesiaTables(),
-        mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
-       true -> ok
-    end,
-
-    lists:map(fun(X) -> X ! {ready, self()} end, Others),
-
-    barrier(Others, lists:zip(Others, 
-			       lists:map(fun(X) -> 0*X end,lists:seq(1,length(Others))))),
-
-    T0 = now(),      
-
-    sendStates(startstates(), null, 1, Names),
-    NumSent = length(startstates()),
-
-    reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
-    
-    io:format("PID ~w: waiting for workers to report termination...~n", [self()]),
-    %{NumStates, NumHits} = waitForTerm(dictToList(Names), 0),
-    {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
-    Dur = timer:now_diff(now(), T0)*1.0e-6,
-    NumPurged = purgeRecQ(0),
-    deleteStateCache(isCaching()),
-    stopMnesia(isUsingMnesia()),
-    
-    io:format("----------~n"),
-    io:format("REPORT:~n"),
-    io:format("\tTotal of ~w states visited~n", [NumStates]),
-    io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
-    io:format("\tExecution time: ~f seconds~n", [Dur]),
-    io:format("\tStates visited per second: ~w~n", [trunc(NumStates/Dur)]),
-    io:format("\tStates visited per second per thread: ~w~n", [trunc((NumStates/Dur)/P)]),
-    IsCaching = isCaching(),
-    if IsCaching ->
-	    io:format("\tTotal of ~w state-cache hits (average of ~w)~n", 
-		      [NumHits, trunc(NumHits/P)]);
-       true ->
-	    ok
-    end,
-    IsLB = isLoadBalancing(),
-    if IsLB ->
-	    io:format("\tLoad balancing enabled~n");
-       true ->
-	    io:format("\tLoad balancing disabled~n")
-    end,
-    io:format("----------~n"),
-    done.	
-
-
-%%----------------------------------------------------------------------
-%% Function: newstart/0
 %% Purpose : A timing wrapper for the parallel version of 
 %%				our model checker.
 %% Args    : 
@@ -610,7 +552,7 @@ start() ->
 %%     
 %%----------------------------------------------------------------------
 
-newstart() ->
+start() ->
     %% print who I am
     io:format("Hello from ~s, my mnesia dir is ~s~n", [getSname(), getMnesiaDir()]),
     register(list_to_atom(getSname()), self()),
@@ -690,7 +632,7 @@ autoStart() ->
     displayOptions(),
     process_flag(trap_exit,true),
     {module, _} = code:load_file(ce_db),
-    newstart().
+    start().
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/4
@@ -878,78 +820,6 @@ sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
 	OtherPID ! {First, extraState},
 	sendExtraStates(OtherPID, Rest, NumToSend-1).
 
-
-%%----------------------------------------------------------------------
-%% Function: initThreads/5
-%% Purpose : Spawns worker threads. Passes the command-line input to each thread.
-%%		Sends the list of all PIDs to each thread once they've all been spawned.
-%% Args    : Names is a list of PIDs of threads spawned so far.
-%%	     NumThreads is the number of threads left to spawn.
-%%	     Data is the command-line input.
-%%           HostList is the list of hosts read from file 'hosts'
-%%           NHost is the number of hosts 
-%% Returns :
-%%     
-%%----------------------------------------------------------------------
-initThreads(Names, 1, _Data, _HostList, _NHost) ->	
-    NamesList = [self() | Names],
-    NamesDict = dict:from_list(lists:zip(lists:seq(1,length(NamesList)), 
-					 NamesList)),
-    NamesDict;
-
-% Data is just End right now
-initThreads(Names, NumThreads, Data, HostList, NHost) ->
-    ID = spawn_link(mynode(NumThreads, HostList, NHost),?MODULE,startWorker,[Data]),
-   io:format("Starting worker thread on ~w with PID ~w~n", 
-	      [mynode(NumThreads, HostList, NHost), ID]),
-    FullNames = initThreads([ID | Names], NumThreads-1, Data, HostList, NHost),
-    ID ! {FullNames, names},
-    FullNames. % send each worker the PID list
-
-%%----------------------------------------------------------------------
-%% Function: startWorker/1
-%% Purpose : Initializes a worker thread by receiving the list of PIDs and 
-%%		calling reach/4.
-%% Args    : Trans is the list of transitions
-%%	     End is the state we're looking for
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-startWorker(End) ->
-    receive
-        {Names, names} -> do_nothing % dummy RHS
-    end,
-    {module, _} = code:load_file(ce_db),
-    startExternalProfiling(isExtProfiling()),
-    createStateCache(isCaching()),
-    mnesia:start(), %startMnesia(isUsingMnesia()),
-
-    % tell root to add me to schema
-    rootPID(Names) ! {ready, self()},
-
-    receive
-        {ready, _} -> ok
-    end,
-    IsUsingMnesia = isUsingMnesia(),
-    HashTable = createHashTable(IsUsingMnesia),
-
-    if IsUsingMnesia ->
-        ok = ce_db:connect(node(rootPID(Names)), [], [visited_state, state_queue]),
-        mnesia:wait_for_tables([schema, visited_state, state_queue], 20000);
-       true -> ok
-    end,
-
-    % synchronizes w/ the root
-    rootPID(Names) ! {ready, self()},
-
-    reach([], End, Names, HashTable, {0,0},[],0,0),
-
-    io:format("PID ~w: Worker is done~n", [self()]),
-    
-    deleteStateCache(isCaching()),
-    stopMnesia(isUsingMnesia()),
-    ok.
-
 %%----------------------------------------------------------------------
 %% Function: reach/8
 %% Purpose : Removes the first state from the list, 
@@ -1024,27 +894,6 @@ reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
         end,
         reach(NewQ, End, Names, HashTable, {NumSent, NewNumRecd},[], Count, NumStates)
     end.
-
-    % if mnesia, check if anything in state queue
-%    case firstOfStateQueue(isUsingMnesia(), state_queue) of
-%        ok ->
-%            NewNumSent = NumSent,
-%            TableSize = Count,
-%            Ret = checkMessageQ(true, TableSize, Names, {NewNumSent, NumRecd}, 
-%							HashTable, [],0, {[],0}),
-%            if Ret == done ->
-%	        done;
-%               true ->
-%	        {NewQ, NewNumRecd, NumStates} = Ret,
-%	        reach(NewQ, End, Names, HashTable, {NewNumSent, NewNumRecd},[], Count, NumStates)
-%            end;
-%        State -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), State]),
-%            if Count > 3 -> timer:sleep(1000); % delay to slow spamming slow nodes
-%              true -> ok
-%            end,
-%            reach([State], End, Names, HashTable, {NumSent, NumRecd}, [], Count, 1)
-%    end.
-
 
 sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
 
@@ -1343,128 +1192,6 @@ startExternalProfiling(IsExtProfiling) ->
 	false->
 	    ok
     end.  
-
-%%----------------------------------------------------------------------
-%% Function: stopMnesia/1
-%% Purpose : Stops the Mnesia DBMS
-%% Args    : boolean
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-stopMnesia(IsUsingMnesia) ->
-    case IsUsingMnesia of 
-	true ->
-	    mnesia:stop(),
-	    ok;
-	false->
-	    ok
-    end.  
-
-%%----------------------------------------------------------------------
-%% Function: createMnesiaTables/0
-%% Purpose : Create Mnesia tables, assumes schema is already created
-%%          and set to disc
-%% Args    : 
-%% Returns : ok or {error, Reason}
-%%     
-%%----------------------------------------------------------------------
-createMnesiaTables() ->
-    ce_db:create([  {visited_state, [{disc_copies, [node()]}, 
-    {local_content, true}, {attributes, record_info(fields, visited_state)}]},
-                    {state_queue, [{disc_copies, [node()]}, 
-    {local_content, true}, {attributes, record_info(fields, state_queue)}]}]),
-    timer:sleep(1000),
-    ok.
-
-%%----------------------------------------------------------------------
-%% Function: attachToMnesiaTables/1
-%% Purpose : Have slaves attach to root's Mnesia schema and tables
-%% Args    : node
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-attachToMnesiaTables(RootNode) ->
-    timer:sleep(2000),
-    ce_db:connect(RootNode, [], [visited_state, state_queue]).
-
-%%----------------------------------------------------------------------
-%% Function: addMnesiaTables/2
-%% Purpose : Will create table if root or try to connect to root's table
-%% Args    : boolean, node
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-addMnesiaTables(IsUsingMnesia, RootNode) ->
-    IAmRoot = amIRoot(),
-    MnesiaSchemaExists = mnesia:system_info(use_dir),
-    case IsUsingMnesia of 
-        true ->
-            case MnesiaSchemaExists of
-                false ->
-                    case IAmRoot of
-                        true -> createMnesiaTables();
-                        false -> attachToMnesiaTables(RootNode);
-                        _Else -> ok
-                    end;
-                true -> mnesia:start(), ok;
-                _Else -> ok
-            end;
-        _Else -> ok
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: addElemToStateQueue/4
-%% Purpose : add the element to the Mnesia persisted state queue
-%% Args    : boolean, State, atom table name, int
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
-    if IsUsingMnesia ->
-        % massage Element into correct record type (table name is first element)
-        Record = #state_queue{state = Element, order = Order},
-        case mnesia:transaction(fun() -> mnesia:write(StateQueue, Record, write) end) of
-            {atomic, _} -> ok;
-            Else -> io:format("~w addElemToStateQueue(~w, ~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Order, Else]),
-                Else
-        end;
-       true -> ok
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: delElemFromStateQueue/3
-%% Purpose : remove the element to the Mnesia persisted state queue
-%% Args    : boolean, State, atom table name
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
-    if IsUsingMnesia ->
-        case mnesia:transaction(fun() -> mnesia:delete(StateQueue, Element, write) end) of
-            {atomic, _} -> ok;
-            Else -> io:format("~w delElemFromStateQueue(~w, ~w, ~w) returned ~w~n", [node(), IsUsingMnesia, Element, StateQueue, Else]),
-                Else
-        end;
-       true -> ok
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: firstOfStateQueue/2
-%% Purpose : check if anything in the state queue, if so, return it
-%% Args    : boolean, atom table name
-%% Returns : State or ok
-%%     
-%%----------------------------------------------------------------------
-firstOfStateQueue(IsUsingMnesia, StateQueue) ->
-    if IsUsingMnesia ->
-        case mnesia:transaction(fun() -> mnesia:first(StateQueue) end) of
-            {atomic, '$end_of_table'} -> ok;
-            {atomic, State} -> State;
-            Else -> io:format("~w firstOfStateQueue(~w, ~w) returned ~w~n", [node(), IsUsingMnesia, StateQueue, Else]),
-                ok
-        end;
-       true -> ok
-    end.
 
 %--------------------------------------------------------------------------------
 %                             Revision History
