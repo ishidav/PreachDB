@@ -7,7 +7,7 @@
 %
 %  Synopsis                   [Main erl module for Parallel Model Checking]
 %
-%  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA]
+%  Author                     [BRAD BINGHAM, FLAVIO M DE PAULA, VALERIE ISHIDA]
 %
 %  Copyright                  [Copyright (C) 2009 University of British Columbia]
 % 
@@ -32,7 +32,7 @@
 %-define(CACHE_SIZE, 4*1048576).
 -define(CACHE_SIZE, 2048).
 -define(CACHE_HIT_INDEX, ?CACHE_SIZE + 10).
--define(PVERSION, 1.0).
+-define(PVERSION, 0.5).
 
 
 %%----------------------------------------------------------------------
@@ -48,8 +48,8 @@
 
 displayHeader() -> 
     io:format("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%~n~n",[]),
-    io:format(" Welcome to PReach - Parallel/Distributed Model Checker v~w~n~n",[?PVERSION]),
-    io:format(" Authors: BRAD BINGHAM, FLAVIO M DE PAULA~n~n",[]),
+    io:format(" Welcome to PReachDB - Parallel/Distributed Model Checker v~w~n~n",[?PVERSION]),
+    io:format(" Authors: BRAD BINGHAM, FLAVIO M DE PAULA, VALERIE ISHIDA~n~n",[]),
     io:format(" [Copyright (C) 2009 University of British Columbia]~n~n",[]),
     io:format(" Compiled in ~w/~w/~w ~w:~w:~w~n",[
 		  element(1,element(1,erlang:localtime())),
@@ -62,9 +62,11 @@ displayHeader() ->
 
 displayOptions() ->
     io:format("------------------------------------------~n",[]),
-    io:format("Preach enabled options:~n~n",[]),
+    io:format("PreachDB enabled options:~n~n",[]),
     io:format("localmode    [true/false]? ~w~n",[isLocalMode()]),
     io:format("statecaching [true/false]? ~w~n",[isCaching()]),
+    io:format("mnesia       [true/false]? ~w~n",[isUsingMnesia()]),
+    io:format("mnesia dir ~s~n",[getMnesiaDir()]),
     io:format("------------------------------------------~n",[]).
 
 

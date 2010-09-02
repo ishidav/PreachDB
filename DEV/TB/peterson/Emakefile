@@ -1,6 +1,8 @@
 {'../../SRC/bloom', [return, native,{hipe, o3},{outdir, "ebin"}]}.
 {'../../SRC/bitarray', [return, native,{hipe, o3},{outdir, "ebin"}]}.
 {'../../SRC/ce_db', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'../../SRC/etable', [return, native,{hipe, o3},{outdir, "ebin"}]}.
+{'../../SRC/fragmentron', [return, native,{hipe, o3},{outdir, "ebin"}]}.
 {'./n5_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
 {'./n6_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
 {'./n7_peterson_modified', [return, native,{hipe, o3},{outdir, "ebin"}]}.
