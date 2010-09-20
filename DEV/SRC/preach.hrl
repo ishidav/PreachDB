@@ -48,9 +48,12 @@
 
 displayHeader() -> 
     io:format("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%~n~n",[]),
-    io:format(" Welcome to PReachDB - Parallel/Distributed Model Checker v~w~n~n",[?PVERSION]),
-    io:format(" Authors: BRAD BINGHAM, FLAVIO M DE PAULA, VALERIE ISHIDA~n~n",[]),
-    io:format(" [Copyright (C) 2009 University of British Columbia]~n~n",[]),
+    io:format(" Welcome to PReachDB - Parallel/Distributed Model Checker~n", []),
+    io:format(" Version ~w~n",[?PVERSION]),
+    io:format(" Author: VALERIE ISHIDA~n~n",[]),
+    io:format(" Based on (UBC) PReach written by~n",[]),
+    io:format(" PReach Authors: BRAD BINGHAM, FLAVIO M DE PAULA~n~n",[]),
+    io:format(" [Copyright (C) 2010 University of British Columbia]~n~n",[]),
     io:format(" Compiled in ~w/~w/~w ~w:~w:~w~n",[
 		  element(1,element(1,erlang:localtime())),
 		  element(2,element(1,erlang:localtime())),

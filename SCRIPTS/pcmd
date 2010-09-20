@@ -1,0 +1,27 @@
+#!/usr/bin/env perl
+use warnings;
+use Getopt::Long;
+
+$help      = '';
+$beamdir   = "ebin";
+$module    = '';
+$command   = "killMsg";
+
+GetOptions ('help'    => \$help,
+            'beamdir=s' => \$beamdir,
+            'module=s'  => \$module,
+            'command=s'    => \$command
+    ) or usage("ERROR: Invalid option");
+
+if ($help or ($module eq '')) {
+  print "usage: pcmd --beamdir=DIRB --module=MODULE --command=CMD\n";
+  print "where\n";
+  print "DIRB      is a directory where erlang 'beam' files are located (default: ebin)\n";
+  print "MODULE    is the name of the module being model-checked (REQUIRED)\n";
+  print "CMD       is the message to send all nodes (default: killMsg)\n";
+  print "            command=\{killMsg, pauseMsg, resumeMsg\}\n";
+  exit;
+}
+
+print("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop\n");
+system("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/ebin -run $module killMsg -run init stop");

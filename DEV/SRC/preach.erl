@@ -218,7 +218,7 @@ updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
 decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, 
                                          SeqNo, HashTable, StateQueue) ->
     if IsUsingMnesia ->
-        if Element /= null ->
+        if Element /= null -> % TODO track ACKs for start states
             mnesia:activity(transaction, fun() -> 
                 [{_, _, OutstandingAcks, CurSeqNo} | _] = mnesia:read(HashTable, Element),
                 if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
@@ -260,6 +260,7 @@ createMnesiaTables(Names) ->
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
     barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
     NodePool = [X || {_, X} <- dictToList(Names)],
+    % TODO command-line override for NDiscCopies
     if size(Names) =< 1 -> NDiscCopies = 1;
        %size(Names) == 2 -> NDiscCopies = 2;
        true -> NDiscCopies = 2
@@ -313,7 +314,9 @@ addMnesiaTables(IsUsingMnesia, Names) ->
                         false -> attachToMnesiaTables(Names);
                         _Else -> ok
                     end;
-                true -> mnesia:start(), mnesia:wait_for_tables([visited_state, state_queue], 10000), ok;
+                true -> mnesia:start(), 
+                  mnesia:activity(transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue], 10000], mnesia_frag),
+                  ok;
                 _Else -> ok
             end;
         _Else -> ok
@@ -351,16 +354,26 @@ delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
 %% Function: firstOfStateQueue/2
 %% Purpose : check if anything in the state queue, if so, return it
 %% Args    : boolean, atom table name
-%% Returns : State or ok
+%% Returns : State LIST or []
 %%     
 %%----------------------------------------------------------------------
 firstOfStateQueue(IsUsingMnesia, StateQueue) ->
     if IsUsingMnesia ->
-        case mnesia:activity(transaction, fun() -> mnesia:first(StateQueue) end, mnesia_frag) of
-            '$end_of_table' -> ok; % empty state queue
-            State -> State
+        % TODO: try getting first 1000 instead
+        SQKeys = mnesia:activity(sync_dirty, fun mnesia:all_keys/1, [StateQueue], mnesia_frag),
+        if length(SQKeys) == 0 -> [];
+          true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(length(SQKeys)))
         end;
-       true -> ok
+
+        %case mnesia:activity(transaction, fun() -> mnesia:dirty_slot(StateQueue, random:uniform(100)) end, mnesia_frag) of
+        %  [X | Y] -> [X | Y]; % we get lucky and hit a full bucket
+        %  _ ->
+        %    case mnesia:activity(sync_dirty, fun() -> mnesia:dirty_first(StateQueue) end, mnesia_frag) of
+        %      '$end_of_table' -> []; % empty state queue
+        %      State -> [State]
+        %    end
+        %end;
+       true -> []
     end.
 
 %%----------------------------------------------------------------------
@@ -562,7 +575,6 @@ rootPID(Names) -> dict:fetch(1,Names).
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-
 start() ->
     %% print who I am
     io:format("Hello from ~s, my mnesia dir is ~s~n", [getSname(), getMnesiaDir()]),
@@ -577,12 +589,16 @@ start() ->
     %% when sending messages, use {PID, pruserX@node} ! Message
     %% might want to register(pruserX, self()) so don't need to know PIDs
     %% Names should just be where nodes can send each other messages
+    % TODO update Names when hot spare join
 
     IsUsingMnesia = isUsingMnesia(),
     HashTable = createHashTable(IsUsingMnesia),
     addMnesiaTables(IsUsingMnesia, Names),
     timer:sleep(4000),
     %mnesia:info(),
+
+    {A1,A2,A3} = now(),
+    random:seed(A1, A2, A3),
 
     if IAmRoot ->
            %% barrier here until all nodes up: wait for message from all others
@@ -650,6 +666,22 @@ autoStart() ->
     {module, _} = code:load_file(fragmentron),
     {module, _} = code:load_file(etable),
     start().
+
+%%----------------------------------------------------------------------
+%% Function: lateStart/0
+%% Purpose : Allow us to add a hot-spare node after an existing node
+%%           has died.
+%% Args    : 
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+lateStart() ->
+    % TODO connect to existing tables
+    % TODO add table copy of any frag w/ missing replicas
+    % TODO rebalance frags?
+    % TODO check message Q
+    % TODO reach()
+    ok.
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/4
@@ -728,15 +760,26 @@ purgeRecQ(Count) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-exitHandler(Pid,Reason) ->
-    io:format("~w ~w Received Exit from ~w w/ Reason ~w~n",[node(), self(), Pid,Reason]),
+exitHandler(Pid, Reason) ->
+    io:format("~w ~w Received Exit @T=~w from ~w w/ Reason ~w~n",[node(), self(), now(), Pid, Reason]),
+    stopMnesia(isUsingMnesia()),
     if Reason =/= normal ->
-	    case net_kernel:connect(node(Pid)) of 
-		true -> ok;
-		_Other  -> 
-		    io:format("~n Exiting immediately...~n",[]),
-		    halt()
-	    end;
+        halt();
+      true -> ok
+    end.
+
+exitHandler(Pid, Reason, NumVS, MemQSize) ->
+    io:format("~w ~w Received Exit @T=~w from ~w w/ Reason ~w~n",[node(), self(), now(), Pid, Reason]),
+    io:format("~w ~w Non-unique states visited this run: ~w, in-memory queue size: ~w~n",[node(), self(), NumVS, MemQSize]),
+    stopMnesia(isUsingMnesia()),
+    if Reason =/= normal ->
+	    %case net_kernel:connect(node(Pid)) of 
+		%true -> ok;
+		%_Other  -> 
+		%    io:format("~n Exiting immediately...~n",[]),
+		%    halt()
+	    %end;
+            halt();
        true -> ok
     end.
 
@@ -754,6 +797,7 @@ exitHandler(Pid,Reason) ->
 %%     
 %%----------------------------------------------------------------------
 sendStates(States, Parent, SeqNo, Names) -> 
+    %io:format("~w PID ~w: sendStates ~w ~w ~w~n", [node(), self(), States, Parent, SeqNo]),
     Me = {list_to_atom(getSname()), node()},
     StateCaching = isCaching(),
     if StateCaching  ->
@@ -779,6 +823,7 @@ sendStates(caching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
     NumSent;
 
 sendStates(caching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
+    % TODO set Owner as function of which node has local copy of frag
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
     CacheLookup = stateCacheLookup(CacheIndex),
@@ -813,6 +858,7 @@ sendStates(nocaching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
     NumSent;
 
 sendStates(nocaching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
+    % TODO set Owner as function of which node has local copy of frag
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     Owner ! {compressState(First), Parent, SeqNo, Me, state},
     sendStates(nocaching, Rest, Parent, SeqNo, Me, Names, NumSent + 1).
@@ -874,13 +920,13 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 	    % add to HT (and # children as ACKs)
 	    {ReqsExplore, SeqNo} = updateElemInHashTable(isUsingMnesia(), FirstState, length(NewStates), HashTable),
 
-	    if ReqsExplore ->
-	        EndFound = stateMatch(CurState,End),
-    	    if EndFound ->
-                ThisNumSent = 0,
-	    	    io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
-    		    rootPID(Names) ! end_found;
-    	       true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, Names),
+            if ReqsExplore ->
+                EndFound = stateMatch(CurState,End),
+                if EndFound ->
+                    ThisNumSent = 0,
+                    io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
+                    rootPID(Names) ! end_found;
+    	       true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, Names)
     	    end;
           true -> ThisNumSent = 0
         end,
@@ -896,7 +942,8 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
-    if Count > 3 -> timer:sleep(1000); % delay to slow spamming the slow nodes
+    RandSleep = random:uniform(2000),
+    if (Count > 3) -> timer:sleep(RandSleep); % delay to slow spamming the slow nodes
       true -> ok
     end,
     % check messages
@@ -905,11 +952,12 @@ reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
       true -> {Q, NewNumRecd, NumStates} = Ret,
         % if mnesia, check if anything in state queue
         case firstOfStateQueue(isUsingMnesia(), state_queue) of
-          ok -> NewQ = Q;
-          State -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), State]),
-            NewQ = [State | Q]
+          [] -> NewQ = Q;
+          NewStates -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), lists:nth(1, NewStates)]),
+            NewQ = lists:append(NewStates, Q) %[State | Q]
         end,
-        reach(NewQ, End, Names, HashTable, {NumSent, NewNumRecd},[], Count, NumStates)
+        %NewQ = lists:append(firstOfStateQueue(isUsingMnesia(), state_queue), Q),
+        reach(NewQ, End, Names, HashTable, {NumSent, NewNumRecd},[], Count, length(NewQ))
     end.
 
 sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
@@ -998,11 +1046,21 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 %%----------------------------------------------------------------------
 checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen}) ->
     IsRoot = amIRoot(),
-    Timeout = if IsTimeout-> if IsRoot -> timeoutTime(); true -> infinity end;
-				 true -> 0 end,
-    
+    IsUsingMnesia = isUsingMnesia(),
+    if IsRoot and IsUsingMnesia ->
+        DiscSQSize = mnesia:activity(sync_dirty, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
+      true -> DiscSQSize = 0
+    end,
+    Timeout = if (DiscSQSize == 0) and IsTimeout-> 
+        if IsRoot -> timeoutTime();
+          true -> infinity
+        end;
+      true -> 0
+    end,
+
 	receive
 	{State, Parent, SeqNo, Sender, state} ->
+            %io:format("~w PID ~w: Received state ~w ~w ~w ~w~n", [node(), self(), State, Parent, SeqNo, Sender]),
 	    case isMemberHashTable(State, HashTable) of 
 		true ->
                     Sender ! {Parent, SeqNo, ack},
@@ -1013,11 +1071,13 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	            %addElemToHashTable(State, false, 0, HashTable),
                     %addElemToStateQueue(isUsingMnesia(), State, state_queue, 0), % this step and previous should be atomic
                     Sender ! {Parent, SeqNo, ack},
+                    % TODO cap in-memory queue size
 		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
 	    end;
 
 	{Parent, SeqNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
+            %io:format("~w PID ~w: Received ack ~w ~w~n", [node(), self(), Parent, SeqNo]),
 	    decrementHashTableAcksOnZeroDelElemFromStateQueue(isUsingMnesia(), Parent, SeqNo, HashTable, state_queue),
 	    checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen});
 
@@ -1044,9 +1104,9 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	    rootPID(Names) ! {NumSent, NumRecd, poll},
 	    receive     
 		{'EXIT', Pid, Reason } ->
-		    exitHandler(Pid,Reason);
+		    exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
 
-		resume ->
+		resume -> % TODO write user scripts to send pause and resume to all nodes
 		    checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd},
 				  HashTable, NewStates, NumStates,{CurQ,CurQLen});
 		die ->
@@ -1057,31 +1117,38 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	    terminateMe(BigListSize, rootPID(Names));
 
 	{'EXIT', Pid, Reason } ->
-	    exitHandler(Pid,Reason);
+	    exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
 
 	end_found -> 
 	    terminateAll(tl(dictToList(Names))),
 	    terminateMe(BigListSize, rootPID(Names))
 
     after Timeout -> % wait for timeoutTime() ms if root
-		if Timeout == 0 ->  % non-blocking case, return 
-				{NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
-		   true -> % otherwise, root polls for termination
-		    io:format("~w PID ~w: Root has timed out, polling workers now...~n", [node(), self()]),
-		    CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
-			CheckSum = element(1,CommAcc) - element(2,CommAcc),
-			if CheckSum == 0 ->	% time to die
-				io:format("=== No End states were found ===~n"),
-				terminateAll(tl(dictToList(Names))),
-				terminateMe(BigListSize, rootPID(Names));
-				true ->	% resume other processes and wait again for new states or timeout
-					io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
-							  "again for timeout...~n", [node(), self(),CheckSum]),
-					resumeWorkers(tl(dictToList(Names))),
-					checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, 
-								  HashTable, NewStates,NumStates, {CurQ,CurQLen})
-			end
-		end
+        %if IsUsingMnesia and Timeout /= 0 ->
+        %    DiscSQSize = mnesia:activity(sync_dirty, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
+        %  true -> DiscSQSize = 0
+        %end,
+        if Timeout == 0 ->  % non-blocking case, return 
+            {NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
+        %  IsUsingMnesia andalso DiscSQSize > 0 ->
+            % TODO: Don't terminate if Mnesia state queue is not empty!
+        %    {NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
+          true -> % otherwise, root polls for termination
+            io:format("~w PID ~w: Root has timed out, polling workers now...~n", [node(), self()]),
+            CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
+            CheckSum = element(1,CommAcc) - element(2,CommAcc),
+            if CheckSum == 0 ->  % time to die
+                io:format("=== No End states were found ===~n"),
+                terminateAll(tl(dictToList(Names))),
+                terminateMe(BigListSize, rootPID(Names));
+              true ->    % resume other processes and wait again for new states or timeout
+                io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
+                          "again for timeout...~n", [node(), self(),CheckSum]),
+                resumeWorkers(tl(dictToList(Names))),
+                checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, 
+                HashTable, NewStates,NumStates, {CurQ,CurQLen})
+            end
+        end
     end.
 
 
@@ -1156,6 +1223,56 @@ terminateAll(PIDs) ->
     lists:map(fun(PID) -> PID ! die end, PIDs),
     done.
 
+%%----------------------------------------------------------------------
+%% Function: killMsg/1, killMsg/0
+%% Purpose : Send an 'EXIT' msg to a node
+%% Args    : which node
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+killMsg(Node) ->
+    Node ! {'EXIT', 'User', 'User killMsg()'},
+    ok.
+
+killMsg() ->
+    {HostList,_} = hosts(),
+    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    lists:foreach(fun(Node) -> Node ! {'EXIT', 'User', 'User killMsg()'} end, NamesList),
+    ok.
+
+%%----------------------------------------------------------------------
+%% Function: pauseMsg/1, pauseMsg/0
+%% Purpose : Send a pause msg to a node
+%% Args    : which node
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+pauseMsg(Node) ->
+    Node ! pause,
+    ok.
+
+pauseMsg() ->
+    {HostList,_} = hosts(),
+    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    lists:foreach(fun(Node) -> Node ! pause end, NamesList),
+    ok.
+
+%%----------------------------------------------------------------------
+%% Function: resumeMsg/1, resumeMsg/0
+%% Purpose : Send a resume msg to a node
+%% Args    : which node
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+resumeMsg(Node) ->
+    Node ! resume,
+    ok.
+
+resumeMsg() ->
+    {HostList,_} = hosts(),
+    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    lists:foreach(fun(Node) -> Node ! resume end, NamesList),
+    ok.
 
 %%----------------------------------------------------------------------
 %% Function: barrier/2
