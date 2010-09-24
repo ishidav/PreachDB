@@ -1077,7 +1077,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
                     %addElemToStateQueue(isUsingMnesia(), State, state_queue, 0), % this step and previous should be atomic
                     Sender ! {Parent, SeqNo, ack},
                     % TODO cap in-memory queue size
-                    if (NumStates >= 5000) ->
+                    if ((NumStates + CurQLen) >= 5000) ->
                         checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable, NewStates, NumStates,{CurQ, CurQLen});
                       true ->
 		        checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
