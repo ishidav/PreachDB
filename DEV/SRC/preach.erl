@@ -109,7 +109,7 @@ addElemToHashTable(Element, OutstandingAcks, SeqNo, HashTable)->
     Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = SeqNo},
     %case mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end) of
         %{atomic, _} -> ok;
-    case mnesia:activity(transaction, fun mnesia:write/2, [HashTable, Record], mnesia_frag) of
+    case mnesia:activity(sync_transaction, fun mnesia:write/2, [HashTable, Record], mnesia_frag) of
         ok -> ok;
         Else -> %io:format("~w@~w addElemToHashTable(~w, ~w, ~w, ~w) returned ~w~n", [getSname(), node(), Element, OutstandingAcks, SeqNo, HashTable, Else]),
                 Else
@@ -163,7 +163,7 @@ addElemToHashTableAndStateQueue(IsUsingMnesia, Element, HashTable, StateQueue) -
         % massage Element into correct record type (table name is first element)
         HTRecord = #visited_state{state = Element, outstandingacks = false, seqno = 0},
         SQRecord = #state_queue{state = Element, order = 0},
-        mnesia:activity(transaction, fun() -> 
+        mnesia:activity(sync_transaction, fun() -> 
             mnesia:write(HashTable, HTRecord, write), 
             mnesia:write(StateQueue, SQRecord, write) end, mnesia_frag);
        true -> bloom:add(Element,HashTable)
@@ -186,7 +186,7 @@ addElemToHashTableAndStateQueue(IsUsingMnesia, Element, HashTable, StateQueue) -
 %%----------------------------------------------------------------------
 updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
   if IsUsingMnesia ->
-    mnesia:activity(transaction, fun() -> 
+    mnesia:activity(sync_transaction, fun() -> 
         case mnesia:read(HashTable, Element, write) of
           [] -> Record = #visited_state{state = Element, 
                          outstandingacks = OutstandingAcks, seqno = 1},
@@ -219,7 +219,7 @@ decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element,
                                          SeqNo, HashTable, StateQueue) ->
     if IsUsingMnesia ->
         if Element /= null -> % TODO track ACKs for start states
-            mnesia:activity(transaction, fun() -> 
+            mnesia:activity(sync_transaction, fun() -> 
                 [{_, _, OutstandingAcks, CurSeqNo} | _] = mnesia:read(HashTable, Element),
                 if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
                     HTRecord = #visited_state{state = Element, outstandingacks = OutstandingAcks-1, seqno = CurSeqNo},
@@ -307,6 +307,8 @@ addMnesiaTables(IsUsingMnesia, Names) ->
     MnesiaSchemaExists = mnesia:system_info(use_dir),
     case IsUsingMnesia of 
         true ->
+            mnesia:change_config(dc_dump_limit, 40),
+            mnesia:change_config(dump_log_write_threshold, 50000),
             case MnesiaSchemaExists of
                 false ->
                     case IAmRoot of
@@ -315,7 +317,7 @@ addMnesiaTables(IsUsingMnesia, Names) ->
                         _Else -> ok
                     end;
                 true -> mnesia:start(), 
-                  mnesia:activity(transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue], 10000], mnesia_frag),
+                  mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue], 10000], mnesia_frag),
                   ok;
                 _Else -> ok
             end;
@@ -333,7 +335,7 @@ addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
     if IsUsingMnesia ->
         % massage Element into correct record type (table name is first element)
         Record = #state_queue{state = Element, order = Order},
-        mnesia:activity(transaction, fun mnesia:write/2, [StateQueue, Record], mnesia_frag);
+        mnesia:activity(sync_transaction, fun mnesia:write/2, [StateQueue, Record], mnesia_frag);
       true -> ok
     end.
 
@@ -346,7 +348,7 @@ addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
 %%----------------------------------------------------------------------
 delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
     if IsUsingMnesia ->
-        mnesia:activity(transaction, fun mnesia:delete/2, [StateQueue, Element, write], mnesia_frag);
+        mnesia:activity(sync_transaction, fun mnesia:delete/2, [StateQueue, Element, write], mnesia_frag);
       true -> ok
     end.
 
@@ -362,10 +364,10 @@ firstOfStateQueue(IsUsingMnesia, StateQueue) ->
         % TODO: try getting first 1000 instead
         SQKeys = mnesia:activity(sync_dirty, fun mnesia:all_keys/1, [StateQueue], mnesia_frag),
         if length(SQKeys) == 0 -> [];
-          true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(length(SQKeys)))
+          true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(2000))
         end;
 
-        %case mnesia:activity(transaction, fun() -> mnesia:dirty_slot(StateQueue, random:uniform(100)) end, mnesia_frag) of
+        %case mnesia:activity(sync_transaction, fun() -> mnesia:dirty_slot(StateQueue, random:uniform(100)) end, mnesia_frag) of
         %  [X | Y] -> [X | Y]; % we get lucky and hit a full bucket
         %  _ ->
         %    case mnesia:activity(sync_dirty, fun() -> mnesia:dirty_first(StateQueue) end, mnesia_frag) of
@@ -610,11 +612,14 @@ start() ->
 
            reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
 
+           if IsUsingMnesia -> NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag);
+             true -> NumMnesiaUniqStates = 0
+           end,
            io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
            {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
            Dur = timer:now_diff(now(), T0)*1.0e-6,
            NumPurged = purgeRecQ(0),
-           if IsUsingMnesia -> NumUniqStates = mnesia:activity(transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag);
+           if IsUsingMnesia -> NumUniqStates = NumMnesiaUniqStates;
              true -> NumUniqStates = NumStates
            end,
            deleteStateCache(isCaching()),
@@ -1072,8 +1077,12 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
                     %addElemToStateQueue(isUsingMnesia(), State, state_queue, 0), % this step and previous should be atomic
                     Sender ! {Parent, SeqNo, ack},
                     % TODO cap in-memory queue size
-		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
+                    if (NumStates >= 5000) ->
+                        checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable, NewStates, NumStates,{CurQ, CurQLen});
+                      true ->
+		        checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
 				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
+                    end
 	    end;
 
 	{Parent, SeqNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
