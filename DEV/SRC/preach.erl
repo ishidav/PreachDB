@@ -33,7 +33,7 @@
 %
 
 %% configuration-type functions
-timeoutTime() -> 60000.
+timeoutTime() -> 2000.
 
 %% these are load balancing parameters. Still in experimental stage,
 %% will eventually be moved to preach.hrl or integrated into ptest.
@@ -81,7 +81,7 @@ isMemberHashTable(Element, HashTable) ->
       %case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
       %  {atomic, [_X | _]} -> true;
       %  {atomic, []} -> false;
-      case mnesia:activity(sync_dirty, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
+      case mnesia:activity(sync_transaction, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
         [_X | _] -> true;
         [] -> false;
         _Else -> false
@@ -137,7 +137,7 @@ readHashTable(Element, HashTable) ->
 	%     {Acks, SeqNo};
 	%{atomic, []} ->
 	%    ok;
-    case mnesia:activity(sync_dirty, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
+    case mnesia:activity(sync_transaction, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
         [X | _] -> {_, _, Acks, SeqNo} = X,
             {Acks, SeqNo};
         [] -> ok;
@@ -212,7 +212,7 @@ updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
 %%              outstanding is 0 after doing this, delete the element
 %%              from the State Queue.
 %% Args    : boolean, State, atom table name, atom table name
-%% Returns : ok or error
+%% Returns : ok or warning
 %%     
 %%----------------------------------------------------------------------
 decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, 
@@ -220,7 +220,7 @@ decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element,
     if IsUsingMnesia ->
         if Element /= null -> % TODO track ACKs for start states
             mnesia:activity(sync_transaction, fun() -> 
-                [{_, _, OutstandingAcks, CurSeqNo} | _] = mnesia:read(HashTable, Element),
+                [{_, _, OutstandingAcks, CurSeqNo} | _] = mnesia:read(HashTable, Element, write),
                 if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
                     HTRecord = #visited_state{state = Element, outstandingacks = OutstandingAcks-1, seqno = CurSeqNo},
                     mnesia:write(HashTable, HTRecord, write),
@@ -228,12 +228,8 @@ decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element,
                       true -> ok
                     end;
                   SeqNo /= CurSeqNo -> ok;
-                  not is_number(OutstandingAcks) -> 
-                    io:format("~w received ACK for state ~w when HT ACKs outstanding was not a number~n", [node(), Element]), 
-                    ok;
-                  true -> 
-                    io:format("~w received ACK for state ~w when ACKs outstanding ~w <= 0, CurSeqNo = ~w SeqNo = ~w~n", [node(), Element, OutstandingAcks, CurSeqNo, SeqNo]), 
-                    ok
+                  not is_number(OutstandingAcks) -> {warning, acks_nan};
+                  true -> {warning, acks_zero}
                 end  % if (SeqNo == CurSeqNo) and ...
             end, mnesia_frag);
           true -> ok
@@ -361,20 +357,10 @@ delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
 %%----------------------------------------------------------------------
 firstOfStateQueue(IsUsingMnesia, StateQueue) ->
     if IsUsingMnesia ->
-        % TODO: try getting first 1000 instead
-        SQKeys = mnesia:activity(sync_dirty, fun mnesia:all_keys/1, [StateQueue], mnesia_frag),
+        SQKeys = mnesia:activity(sync_transaction, fun mnesia:all_keys/1, [StateQueue], mnesia_frag),
         if length(SQKeys) == 0 -> [];
           true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(2000))
         end;
-
-        %case mnesia:activity(sync_transaction, fun() -> mnesia:dirty_slot(StateQueue, random:uniform(100)) end, mnesia_frag) of
-        %  [X | Y] -> [X | Y]; % we get lucky and hit a full bucket
-        %  _ ->
-        %    case mnesia:activity(sync_dirty, fun() -> mnesia:dirty_first(StateQueue) end, mnesia_frag) of
-        %      '$end_of_table' -> []; % empty state queue
-        %      State -> [State]
-        %    end
-        %end;
        true -> []
     end.
 
@@ -612,7 +598,8 @@ start() ->
 
            reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
 
-           if IsUsingMnesia -> NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag);
+           if IsUsingMnesia -> mnesia:info(),
+               NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
              true -> NumMnesiaUniqStates = 0
            end,
            io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
@@ -646,7 +633,9 @@ start() ->
            end;
        true -> rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
            reach([], null, Names, HashTable, {0,0},[],0,0),
-           io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()])
+           io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
+           mnesia:info(),
+           timer:sleep(5000)
     end,
     stopMnesia(IsUsingMnesia),
     io:format("----------~n"),
@@ -863,8 +852,21 @@ sendStates(nocaching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
     NumSent;
 
 sendStates(nocaching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
-    % TODO set Owner as function of which node has local copy of frag
-    Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
+    IsUsingMnesia = isUsingMnesia(),
+    if IsUsingMnesia ->
+        % set Owner as function of which node has local copy of frag
+        {_,_,_,_,FragHash} = mnesia:table_info(visited_state, frag_hash),
+        FragNum = 1+(mnesia_frag_hash:key_to_frag_number(FragHash, First) rem dict:size(Names)), % TODO: this is broken / size(Names) is a hack for # of fragments since I set them equal
+        FragName = if FragNum == 1 -> visited_state; true -> list_to_atom("visited_state_frag"++integer_to_list(FragNum)) end,
+        %HostList = mnesia:table_info(FragName, where_to_write),
+        %Host = lists:nth(((FragNum-1) rem length(HostList))+1, HostList),
+        Host = mnesia:table_info(FragName, where_to_read),
+        Owner = {list_to_atom(string:sub_word(atom_to_list(Host), 1, $@)), Host};
+        %io:format("~w sendStates FragHash=~w FragNum=~w FragName=~w Host=~w Owner=~w~n", [node(), FragHash, FragNum, FragName, Host, Owner]),
+        %timer:sleep(1000);
+      true ->
+        Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names)
+    end,
     Owner ! {compressState(First), Parent, SeqNo, Me, state},
     sendStates(nocaching, Rest, Parent, SeqNo, Me, Names, NumSent + 1).
 
@@ -1052,11 +1054,11 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen}) ->
     IsRoot = amIRoot(),
     IsUsingMnesia = isUsingMnesia(),
-    if IsRoot and IsUsingMnesia ->
-        DiscSQSize = mnesia:activity(sync_dirty, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
+    if IsUsingMnesia -> %(IsRoot and IsUsingMnesia)
+        DiscSQSize = mnesia:activity(sync_transaction, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
       true -> DiscSQSize = 0
     end,
-    Timeout = if (DiscSQSize == 0) and IsTimeout-> 
+    Timeout = if ((DiscSQSize == 0) and IsTimeout) ->
         if IsRoot -> timeoutTime();
           true -> infinity
         end;
@@ -1087,7 +1089,11 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 
 	{Parent, SeqNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
             %io:format("~w PID ~w: Received ack ~w ~w~n", [node(), self(), Parent, SeqNo]),
-	    decrementHashTableAcksOnZeroDelElemFromStateQueue(isUsingMnesia(), Parent, SeqNo, HashTable, state_queue),
+            AckResult = decrementHashTableAcksOnZeroDelElemFromStateQueue(isUsingMnesia(), Parent, SeqNo, HashTable, state_queue),
+            if AckResult == {warning, acks_zero} ->
+                io:format("~w received ACK for state ~w when ACKs outstanding <= 0, SeqNo = ~w~n", [node(), Parent, SeqNo]);
+              true -> ok
+            end,
 	    checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen});
 
 	{State, extraState} ->
@@ -1133,15 +1139,8 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 	    terminateMe(BigListSize, rootPID(Names))
 
     after Timeout -> % wait for timeoutTime() ms if root
-        %if IsUsingMnesia and Timeout /= 0 ->
-        %    DiscSQSize = mnesia:activity(sync_dirty, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
-        %  true -> DiscSQSize = 0
-        %end,
         if Timeout == 0 ->  % non-blocking case, return 
             {NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
-        %  IsUsingMnesia andalso DiscSQSize > 0 ->
-            % TODO: Don't terminate if Mnesia state queue is not empty!
-        %    {NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
           true -> % otherwise, root polls for termination
             io:format("~w PID ~w: Root has timed out, polling workers now...~n", [node(), self()]),
             CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
@@ -1211,11 +1210,11 @@ resumeWorkers(PIDs) ->
 terminateMe(NumStatesVisited, RootPID) ->
     IsCaching = isCaching(),
     if IsCaching ->
-	    io:format("~w PID ~w: was told to die; visited ~w unique states; ~w " ++ 
+	    io:format("~w PID ~w: was told to die; visited ~w non-unique states; ~w " ++ 
 		      "state-cache hits~n", [node(), self(), NumStatesVisited, getHitCount()]),
 	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, getHitCount()}, done};
        true ->
-	    io:format("~w PID ~w: was told to die; visited ~w unique states; ~n", 
+	    io:format("~w PID ~w: was told to die; visited ~w non-unique states; ~n", 
 		      [node(), self(), NumStatesVisited]),
 	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, 0}, done}
     end, 
