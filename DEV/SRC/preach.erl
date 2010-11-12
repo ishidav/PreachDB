@@ -65,173 +65,104 @@ createHashTable(IsUsingMnesia) ->
   end.
 
 %%----------------------------------------------------------------------
-%% Function: isMemberHashTable/2
-%% Purpose : Checks for membership in the hash table
-%%               
-%% Args    : Element is the state that we want to check
-%%           HashTable is the name of the hash table returned by
-%%           createHashTable
-%%
-%% Returns : returns true or false
-%%     
-%%----------------------------------------------------------------------
-isMemberHashTable(Element, HashTable) ->
-  IsUsingMnesia = isUsingMnesia(),
-  if IsUsingMnesia ->
-      %case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
-      %  {atomic, [_X | _]} -> true;
-      %  {atomic, []} -> false;
-      case mnesia:activity(sync_transaction, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
-        [_X | _] -> true;
-        [] -> false;
-        _Else -> false
-      end;
-    true -> bloom:member(Element,HashTable)
-  end.
-
-%%----------------------------------------------------------------------
-%% Function: addElemToHashTable/4
-%% Purpose : Add a state to the hash table
-%%               
-%% Args    :  Element is the state that we want to add
-%%           OutstandingAcks is the number of ACKs left
-%%           HashTable is the name of the hash table returned by
-%%           createHashTable
-%%
-%% Returns : a variable which type depends on the implementation, eg, 
-%%           bloom filter will return a record type; 
-%%     
-%%----------------------------------------------------------------------
-addElemToHashTable(Element, OutstandingAcks, SeqNo, HashTable)->
-  IsUsingMnesia = isUsingMnesia(),
-  if IsUsingMnesia ->
-    % massage Element into correct record type (table name is first element)
-    Record = #visited_state{state = Element, outstandingacks = OutstandingAcks, seqno = SeqNo},
-    %case mnesia:transaction(fun() -> mnesia:write(HashTable, Record, write) end) of
-        %{atomic, _} -> ok;
-    case mnesia:activity(sync_transaction, fun mnesia:write/2, [HashTable, Record], mnesia_frag) of
-        ok -> ok;
-        Else -> %io:format("~w@~w addElemToHashTable(~w, ~w, ~w, ~w) returned ~w~n", [getSname(), node(), Element, OutstandingAcks, SeqNo, HashTable, Else]),
-                Else
-    end;
-   true -> bloom:add(Element,HashTable)
-  end.
-
-%%----------------------------------------------------------------------
-%% Function: readHashTable/2
-%% Purpose : Reads the state value (ACKs and SeqNo) in the hash table
-%%               
-%% Args    : Element is the state that we want to read
-%%           HashTable is the name of the hash table returned by
-%%           createHashTable
-%%
-%% Returns : integer number of ACKs or ok
-%%     
-%%----------------------------------------------------------------------
-readHashTable(Element, HashTable) ->
-  IsUsingMnesia = isUsingMnesia(),
-  if IsUsingMnesia ->
-    %case mnesia:transaction(fun() -> mnesia:read(HashTable, Element) end) of 
-	%{atomic, [X | _]} ->
-	%     {_, _, Acks, SeqNo} = X,
-	%     {Acks, SeqNo};
-	%{atomic, []} ->
-	%    ok;
-    case mnesia:activity(sync_transaction, fun mnesia:read/1, [{HashTable, Element}], mnesia_frag) of
-        [X | _] -> {_, _, Acks, SeqNo} = X,
-            {Acks, SeqNo};
-        [] -> ok;
-        _Else ->
-            %io:format("~w@~w readHashTable(~w, ~w) returned ~w~n", [getSname(), node(), Element, HashTable, Else]),
-            ok
-    end;
-   true -> 
-    ok
-  end.
-
-%%----------------------------------------------------------------------
-%% Function: addElemToHashTableAndStateQueue/4
+%% Function: addElemToHTAndSQReturnIsMember/4
 %% Purpose : Add the element to the Mnesia persisted hash table and 
-%%              state queue.  Use this when we first receive the state
-%%              and before we expand it.  Writes to both atomically.
-%% Args    : boolean, State, atom table name, atom table name
-%% Returns : ok or error
+%%              state queue if not already in hash table.  Use this 
+%%              when we first receive.  Writes to both atomically.
+%% Args    : boolean, State, table name, table name
+%% Returns : bool: was element already in HT?
 %%     
 %%----------------------------------------------------------------------
-addElemToHashTableAndStateQueue(IsUsingMnesia, Element, HashTable, StateQueue) ->
+addElemToHTAndSQReturnIsMember(IsUsingMnesia, Element, HashTable, StateQueue) ->
     if IsUsingMnesia ->
-        % massage Element into correct record type (table name is first element)
-        HTRecord = #visited_state{state = Element, outstandingacks = false, seqno = 0},
-        SQRecord = #state_queue{state = Element, order = 0},
-        mnesia:activity(sync_transaction, fun() -> 
-            mnesia:write(HashTable, HTRecord, write), 
-            mnesia:write(StateQueue, SQRecord, write) end, mnesia_frag);
-       true -> bloom:add(Element,HashTable)
+        mnesia:activity(sync_transaction, fun(E, HT, SQ) -> 
+            case mnesia:read(HT, E, write) of
+              [] -> mnesia:write(SQ, {SQ, Element, 0}, write),
+                mnesia:write(HT, {HT, Element, 0}, write),
+                false;
+              [_|_] -> true
+            end
+        end, [Element, HashTable, StateQueue], mnesia_frag);
+      true -> Ret = bloom:member(Element, HashTable),
+        if Ret -> ok;
+          true -> bloom:add(Element, HashTable)
+        end,
+        Ret
     end.
 
 %%----------------------------------------------------------------------
-%% Function: updateElemInHashTable/4
-%% Purpose : Add a state to the hash table
+%% Function: createACKTable/1
+%% Purpose : Routines to abstract away how the hash table is implemented, eg,
+%%           erlang lists, ets or dict, bloom filter
 %%               
-%% Args    :  Element is the state that we want to add
-%%           OutstandingAcks is the number of ACKs left
-%%           HashTable is the name of the hash table returned by
-%%           createHashTable
+%% Args    : 
 %%
-%% Returns : a variable which type depends on the implementation, eg, 
-%%           bloom filter will return a record type; mnesia table 
-%%           returns {bool: true if this state has not been explored, 
-%%           the new ACK sequence number}
+%% Returns : an ets table or null
 %%     
 %%----------------------------------------------------------------------
-updateElemInHashTable(IsUsingMnesia, Element, OutstandingAcks, HashTable) ->
-  if IsUsingMnesia ->
-    mnesia:activity(sync_transaction, fun() -> 
-        case mnesia:read(HashTable, Element, write) of
-          [] -> Record = #visited_state{state = Element, 
-                         outstandingacks = OutstandingAcks, seqno = 1},
-                mnesia:write(HashTable, Record, write),
-                {true, 1};
-          [X] -> {_, _, OA, S} = X,
-                if is_number(OA) andalso OA == 0 ->
-                    {false, S};
-                  true ->
-                    Record = #visited_state{state = Element, 
-                         outstandingacks = OutstandingAcks, seqno = S+1},
-                    mnesia:write(HashTable, Record, write),
-                    {true, S+1}
-                end
-        end
-    end, mnesia_frag);
-    true -> bloom:add(Element,HashTable)
-  end.
+createACKTable(IsUsingMnesia) ->
+    if IsUsingMnesia ->
+        ets:new(acktable, []);
+      true -> null
+    end.
 
 %%----------------------------------------------------------------------
-%% Function: decrementHashTableAcksOnZeroDelElemFromStateQueue/5
+%% Function: addElemInACKTable/5
+%% Purpose : Add a state to the ACK table if its children are still 
+%%           not known to be stored to disk (== state is still in SQ)
+%%               
+%% Args    : Element is the state that we want to add
+%%           OutstandingAcks is the number of ACKs left
+%%           ACKTable is the name of the ACK table returned by createACKTable
+%%           StateQueue is the name of the mnesia state queue
+%%
+%% Returns : {bool: true if this state has not been explored, 
+%%           integer: the new ACK sequence number}
+%%     
+%%----------------------------------------------------------------------
+addElemInACKTable(IsUsingMnesia, Element, OutstandingAcks, ACKTable, StateQueue) ->
+    if IsUsingMnesia ->
+        ReqExplore = case mnesia:activity(sync_transaction, fun mnesia:read/3, [StateQueue, Element, read], mnesia_frag) of
+          [] -> false;
+          [_|_] -> true
+        end,
+        SeqNo = if ReqExplore ->
+            case ets:lookup(ACKTable, Element) of
+              [] -> ets:insert(ACKTable, {Element, OutstandingAcks, 1}),
+                1;
+              [{_,_,S}|_] -> ets:insert(ACKTable, {Element, OutstandingAcks, S+1}),
+                S+1
+            end;
+          true -> 0
+        end,
+        {ReqExplore, SeqNo};
+      true -> {true, 0}
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: decACKsOnZeroDelFromSQ/7
 %% Purpose : Decrements the ACKs outstanding for this element.  If ACKs
 %%              outstanding is 0 after doing this, delete the element
 %%              from the State Queue.
-%% Args    : boolean, State, atom table name, atom table name
+%% Args    : boolean, State, integer, integer, integer, table name, table name
 %% Returns : ok or warning
 %%     
 %%----------------------------------------------------------------------
-decrementHashTableAcksOnZeroDelElemFromStateQueue(IsUsingMnesia, Element, 
-                                         SeqNo, HashTable, StateQueue) ->
-    if IsUsingMnesia ->
+decACKsOnZeroDelFromSQ(IsUsingMnesia, Element, SeqNo, EpicNo, MyEpic, ACKTable, StateQueue) ->
+    if IsUsingMnesia and (EpicNo == MyEpic) ->
         if Element /= null -> % TODO track ACKs for start states
-            mnesia:activity(sync_transaction, fun() -> 
-                [{_, _, OutstandingAcks, CurSeqNo} | _] = mnesia:read(HashTable, Element, write),
-                if (SeqNo == CurSeqNo) and is_number(OutstandingAcks) andalso OutstandingAcks > 0 ->
-                    HTRecord = #visited_state{state = Element, outstandingacks = OutstandingAcks-1, seqno = CurSeqNo},
-                    mnesia:write(HashTable, HTRecord, write),
-                    if OutstandingAcks-1 == 0 -> mnesia:delete(StateQueue, Element, write);
-                      true -> ok
-                    end;
-                  SeqNo /= CurSeqNo -> ok;
-                  not is_number(OutstandingAcks) -> {warning, acks_nan};
-                  true -> {warning, acks_zero}
-                end  % if (SeqNo == CurSeqNo) and ...
-            end, mnesia_frag);
+            case ets:lookup(ACKTable, Element) of
+              [] -> ok;
+              [{_,A,S}|_] -> 
+                if (S == SeqNo) and (A =< 0) -> {warning, acks_zero};
+                  (S == SeqNo) and (A == 1) -> 
+                    mnesia:activity(sync_transaction, fun mnesia:delete/3, [StateQueue, Element, write], mnesia_frag),
+                    ets:delete(ACKTable, Element),
+                    ok;
+                  (S == SeqNo) -> ets:insert(ACKTable, {Element, A-1, S}), ok;
+                  true -> ok
+                end
+            end;
           true -> ok
         end;
       true -> ok
@@ -263,6 +194,7 @@ createMnesiaTables(Names) ->
     end,
     fragmentron:create_table(visited_state, [{attributes, record_info(fields, visited_state)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
     fragmentron:create_table(state_queue, [{attributes, record_info(fields, state_queue)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
+    mnesia:create_table(epic_num, [{disc_only_copies, NodePool}, {local_content, true}]),
     lists:foreach(fun(X) -> X ! {ready, {list_to_atom(getSname()),node()}} end, Others),
     ok.
 
@@ -321,34 +253,6 @@ addMnesiaTables(IsUsingMnesia, Names) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: addElemToStateQueue/4
-%% Purpose : add the element to the Mnesia persisted state queue
-%% Args    : boolean, State, atom table name, int
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-addElemToStateQueue(IsUsingMnesia, Element, StateQueue, Order) ->
-    if IsUsingMnesia ->
-        % massage Element into correct record type (table name is first element)
-        Record = #state_queue{state = Element, order = Order},
-        mnesia:activity(sync_transaction, fun mnesia:write/2, [StateQueue, Record], mnesia_frag);
-      true -> ok
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: delElemFromStateQueue/3
-%% Purpose : remove the element to the Mnesia persisted state queue
-%% Args    : boolean, State, atom table name
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-delElemFromStateQueue(IsUsingMnesia, Element, StateQueue) ->
-    if IsUsingMnesia ->
-        mnesia:activity(sync_transaction, fun mnesia:delete/2, [StateQueue, Element, write], mnesia_frag);
-      true -> ok
-    end.
-
-%%----------------------------------------------------------------------
 %% Function: firstOfStateQueue/2
 %% Purpose : check if anything in the state queue, if so, return it
 %% Args    : boolean, atom table name
@@ -362,6 +266,28 @@ firstOfStateQueue(IsUsingMnesia, StateQueue) ->
           true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(2000))
         end;
        true -> []
+    end.
+
+%%----------------------------------------------------------------------
+%% Function: incEpicNum/2
+%% Purpose : increments the epic number stored in the disc_only_copies 
+%%           NodeData table
+%% Args    : bool, mnesia table name
+%% Returns : integer
+%%     
+%%----------------------------------------------------------------------
+incEpicNum(IsUsingMnesia, NodeData) ->
+    if IsUsingMnesia ->
+        {atomic, EpicNum} = mnesia:transaction(fun(X) ->
+            case mnesia:read(X, node()) of
+              [] -> mnesia:write(X, {X, node(), 0}, write),
+                0;
+              [{_,_,E}|_] -> mnesia:write(X, {X, node(), E+1}, write),
+                E+1
+            end
+        end, [NodeData]),
+        EpicNum;
+      true -> 0
     end.
 
 %%----------------------------------------------------------------------
@@ -579,9 +505,17 @@ start() ->
     %% Names should just be where nodes can send each other messages
     % TODO update Names when hot spare join
 
+    %% HashTable is the set of states seen
+    %% StateQueue is the set of states whose children are not all known to be stored to disk
+    %% NodeData is a private table with a single record storing the epic number -- how many times this node has been restarted
+    %% ACKTable is RAM only ets table storing the ACKs-remaining counter and the sequence number per state
     IsUsingMnesia = isUsingMnesia(),
     HashTable = createHashTable(IsUsingMnesia),
-    addMnesiaTables(IsUsingMnesia, Names),
+    StateQueue = state_queue,
+    NodeData = epic_num,
+    addMnesiaTables(IsUsingMnesia, Names), % TODO: take names of HashTable, StateQueue, NodeData
+    EpicNum = incEpicNum(IsUsingMnesia, NodeData),
+    ACKTable = createACKTable(IsUsingMnesia),
     timer:sleep(4000),
     %mnesia:info(),
 
@@ -593,10 +527,10 @@ start() ->
            Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
            barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
            T0 = now(),
-           sendStates(startstates(), null, 1, Names),
+           sendStates(startstates(), null, 1, EpicNum, Names),
            NumSent = length(startstates()),
 
-           reach([], null, Names,HashTable,{NumSent,0},[], 0,0), %should remove null param
+           reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
 
            if IsUsingMnesia -> mnesia:info(),
                NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
@@ -632,7 +566,7 @@ start() ->
                io:format("\tLoad balancing disabled~n")
            end;
        true -> rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
-           reach([], null, Names, HashTable, {0,0},[],0,0),
+           reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
            io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
            mnesia:info(),
            timer:sleep(5000)
@@ -778,7 +712,7 @@ exitHandler(Pid, Reason, NumVS, MemQSize) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/4
+%% Function: sendStates/5
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%		
 %% Args    : First is the state we're currently sending
@@ -790,19 +724,19 @@ exitHandler(Pid, Reason, NumVS, MemQSize) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(States, Parent, SeqNo, Names) -> 
-    %io:format("~w PID ~w: sendStates ~w ~w ~w~n", [node(), self(), States, Parent, SeqNo]),
+sendStates(States, Parent, SeqNo, EpicNo, Names) -> 
+    %io:format("~w PID ~w: sendStates ~w ~w ~w ~w~n", [node(), self(), States, Parent, SeqNo, EpicNo]),
     Me = {list_to_atom(getSname()), node()},
     StateCaching = isCaching(),
     if StateCaching  ->
-	    sendStates(caching,States, Parent, SeqNo, Me, Names, 0);
+	    sendStates(caching, States, Parent, SeqNo, EpicNo, Me, Names, 0);
        true ->
-	    sendStates(nocaching, States, Parent, SeqNo, Me, Names, 0)
+	    sendStates(nocaching, States, Parent, SeqNo, EpicNo, Me, Names, 0)
     end.
    
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/7 (State Caching)
+%% Function: sendStates/8 (State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%           DOCUMENT: Explain how state caching works		
 %%
@@ -813,17 +747,17 @@ sendStates(States, Parent, SeqNo, Names) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(caching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
+sendStates(caching, [], _Parent, _SeqNo, _EpicNo, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(caching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
+sendStates(caching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent) ->
     % TODO set Owner as function of which node has local copy of frag
     Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
     CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
     CacheLookup = stateCacheLookup(CacheIndex),
     CompactedState = hashState2Int(First),
     WasSent = if Owner == Me -> % my state - send, do not cache
-		      Owner ! {compressState(First), Parent, SeqNo, Me, state},
+		      Owner ! {compressState(First), Parent, SeqNo, EpicNo, Me, state},
 		      1;
 		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == CompactedState -> %First -> 
 			% not my state, in cache - do not send
@@ -831,14 +765,14 @@ sendStates(caching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
 		      0;
 		 true -> % not my state, not in cache - send and cache
 		      stateCacheInsert(CacheIndex, hashState2Int(First)),
-		      Owner ! {compressState(First), Parent, SeqNo, Me, state},
+		      Owner ! {compressState(First), Parent, SeqNo, EpicNo, Me, state},
 		      1
 	      end,
-    sendStates(caching, Rest, Parent, SeqNo, Me, Names, NumSent + WasSent);
+    sendStates(caching, Rest, Parent, SeqNo, EpicNo, Me, Names, NumSent + WasSent);
 
 
 %%----------------------------------------------------------------------
-%% Function: sendStates/7 (NO State Caching)
+%% Function: sendStates/8 (NO State Caching)
 %% Purpose : Sends a list of states to their respective owners, one at a time.
 %%              
 %% Args    : First is the state we're currently sending
@@ -848,10 +782,10 @@ sendStates(caching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
 %% Returns : ok
 %%     
 %%----------------------------------------------------------------------
-sendStates(nocaching, [], _Parent, _SeqNo, _Me, _Names, NumSent) ->
+sendStates(nocaching, [], _Parent, _SeqNo, _EpicNo, _Me, _Names, NumSent) ->
     NumSent;
 
-sendStates(nocaching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
+sendStates(nocaching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent) ->
     IsUsingMnesia = isUsingMnesia(),
     if IsUsingMnesia ->
         % set Owner as function of which node has local copy of frag
@@ -867,8 +801,8 @@ sendStates(nocaching, [First | Rest], Parent, SeqNo, Me, Names, NumSent) ->
       true ->
         Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names)
     end,
-    Owner ! {compressState(First), Parent, SeqNo, Me, state},
-    sendStates(nocaching, Rest, Parent, SeqNo, Me, Names, NumSent + 1).
+    Owner ! {compressState(First), Parent, SeqNo, EpicNo, Me, state},
+    sendStates(nocaching, Rest, Parent, SeqNo, EpicNo, Me, Names, NumSent + 1).
 
 %%----------------------------------------------------------------------
 %% Function: sendExtraStates/3 
@@ -912,7 +846,7 @@ sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewStateList, Count, QLen) ->
+reach([FirstState | RestStates], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStateList, Count, QLen) ->
             %io:format("~w in reach(~w)~n", [node(), FirstState]),
 	    BalFreq = balanceFrequency(),
 		IsLB = isLoadBalancing(),
@@ -924,8 +858,8 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
 		profiling(0, 0, NumSent, NumRecd, Count, QLen),
 	    CurState = decompressState(FirstState),
 	    NewStates = transition(CurState),
-	    % add to HT (and # children as ACKs)
-	    {ReqsExplore, SeqNo} = updateElemInHashTable(isUsingMnesia(), FirstState, length(NewStates), HashTable),
+	    % ACKTable.insert({S, length(S.children), seqno})
+	    {ReqsExplore, SeqNo} = addElemInACKTable(isUsingMnesia(), FirstState, length(NewStates), ACKTable, StateQueue),
 
             if ReqsExplore ->
                 EndFound = stateMatch(CurState,End),
@@ -933,38 +867,38 @@ reach([FirstState | RestStates], End, Names, HashTable, {NumSent, NumRecd},_NewS
                     ThisNumSent = 0,
                     io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
                     rootPID(Names) ! end_found;
-    	       true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, Names)
+    	       true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, EpicNum, Names)
     	    end;
           true -> ThisNumSent = 0
         end,
 
 		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, 
-								HashTable, [],0, {RestStates, QLen-1} ),
+								HashTable, StateQueue, ACKTable, EpicNum, [], 0, {RestStates, QLen-1} ),
  	    if Ret == done ->
 			done;
 		true -> {NewQ, NewNumRecd, NewQLen} = Ret,
-			reach(NewQ, End, Names, HashTable, 
+			reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, 
 			{NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
 		end;
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, HashTable, {NumSent, NumRecd}, _NewStates,Count, _QLen) ->
+reach([], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStates, Count, _QLen) ->
     RandSleep = random:uniform(2000),
     if (Count > 3) -> timer:sleep(RandSleep); % delay to slow spamming the slow nodes
       true -> ok
     end,
     % check messages
-    Ret = checkMessageQ(true, Count, Names, {NumSent, NumRecd}, HashTable, [],0, {[],0}),
+    Ret = checkMessageQ(true, Count, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {[], 0}),
     if Ret == done -> done;
-      true -> {Q, NewNumRecd, NumStates} = Ret,
+      true -> {Q, NewNumRecd, _NumStates} = Ret,
         % if mnesia, check if anything in state queue
-        case firstOfStateQueue(isUsingMnesia(), state_queue) of
+        case firstOfStateQueue(isUsingMnesia(), StateQueue) of
           [] -> NewQ = Q;
-          NewStates -> io:format("~w in reach([],...) and read state ~w from Mnesia work queue~n", [node(), lists:nth(1, NewStates)]),
+          NewStates -> io:format("~w in reach([],...) and read states [~w, ...] from Mnesia work queue~n", [node(), lists:nth(1, NewStates)]),
             NewQ = lists:append(NewStates, Q) %[State | Q]
         end,
-        %NewQ = lists:append(firstOfStateQueue(isUsingMnesia(), state_queue), Q),
-        reach(NewQ, End, Names, HashTable, {NumSent, NewNumRecd},[], Count, length(NewQ))
+        %NewQ = lists:append(firstOfStateQueue(isUsingMnesia(), StateQueue), Q),
+        reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NewNumRecd}, [], Count, length(NewQ))
     end.
 
 sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
@@ -1026,7 +960,7 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Function: checkMessageQ/8
+%% Function: checkMessageQ/11
 %% Purpose : Polls for incoming messages
 %%
 %% Args    : IsTimeout is boolean indicator of blocking/nonblocking receive;
@@ -1051,11 +985,11 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 %%			OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
-checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen}) ->
+checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
     IsRoot = amIRoot(),
     IsUsingMnesia = isUsingMnesia(),
     if IsUsingMnesia -> %(IsRoot and IsUsingMnesia)
-        DiscSQSize = mnesia:activity(sync_transaction, fun mnesia:table_info/2, [state_queue, size], mnesia_frag);
+        DiscSQSize = mnesia:activity(sync_transaction, fun mnesia:table_info/2, [StateQueue, size], mnesia_frag);
       true -> DiscSQSize = 0
     end,
     Timeout = if ((DiscSQSize == 0) and IsTimeout) ->
@@ -1065,39 +999,28 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
       true -> 0
     end,
 
-	receive
-	{State, Parent, SeqNo, Sender, state} ->
-            %io:format("~w PID ~w: Received state ~w ~w ~w ~w~n", [node(), self(), State, Parent, SeqNo, Sender]),
-	    case isMemberHashTable(State, HashTable) of 
-		true ->
-                    Sender ! {Parent, SeqNo, ack},
-		    checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
-				  NewStates, NumStates,{CurQ, CurQLen});
-		false ->
-	            addElemToHashTableAndStateQueue(isUsingMnesia(), State, HashTable, state_queue),
-	            %addElemToHashTable(State, false, 0, HashTable),
-                    %addElemToStateQueue(isUsingMnesia(), State, state_queue, 0), % this step and previous should be atomic
-                    Sender ! {Parent, SeqNo, ack},
-                    % TODO cap in-memory queue size
-                    if ((NumStates + CurQLen) >= 5000) ->
-                        checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable, NewStates, NumStates,{CurQ, CurQLen});
-                      true ->
-		        checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd+1},HashTable,
-				  [State|NewStates], NumStates+1,{CurQ, CurQLen})
-                    end
-	    end;
+    receive
+    {State, Parent, SeqNo, EpicNo, Sender, state} ->
+        %io:format("~w PID ~w: Received state ~w ~w ~w ~w ~w~n", [node(), self(), State, Parent, SeqNo, EpicNo, Sender]),
+        IsMember = addElemToHTAndSQReturnIsMember(IsUsingMnesia, State, HashTable, StateQueue),
+        Sender ! {Parent, SeqNo, EpicNo, ack},
+        if IsMember or (IsUsingMnesia and ((NumStates + CurQLen) >= 5000)) ->  % cap in-memory queue size
+            checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ, CurQLen});
+          true ->
+            checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, [State|NewStates], NumStates+1,{CurQ, CurQLen})
+        end;
 
-	{Parent, SeqNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
-            %io:format("~w PID ~w: Received ack ~w ~w~n", [node(), self(), Parent, SeqNo]),
-            AckResult = decrementHashTableAcksOnZeroDelElemFromStateQueue(isUsingMnesia(), Parent, SeqNo, HashTable, state_queue),
-            if AckResult == {warning, acks_zero} ->
-                io:format("~w received ACK for state ~w when ACKs outstanding <= 0, SeqNo = ~w~n", [node(), Parent, SeqNo]);
-              true -> ok
-            end,
-	    checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewStates, NumStates, {CurQ, CurQLen});
+    {Parent, SeqNo, EpicNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
+        %io:format("~w PID ~w: Received ack ~w ~w ~w~n", [node(), self(), Parent, SeqNo EpicNo]),
+        AckResult = decACKsOnZeroDelFromSQ(IsUsingMnesia, Parent, SeqNo, EpicNo, MyEpicNum, ACKTable, StateQueue),
+        if AckResult == {warning, acks_zero} ->
+            io:format("~w received ACK for state ~w when ACKs outstanding <= 0, SeqNo = ~w EpicNo = ~w~n", [node(), Parent, SeqNo, EpicNo]);
+          true -> ok
+        end,
+        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
 	{State, extraState} ->
-			checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd},HashTable,
+			checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, 
 				  [State|NewStates], NumStates+1,{CurQ,CurQLen});
 
 	{OtherSize, OtherPID, myQSize} ->
@@ -1112,7 +1035,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 			{T1,T2};
 		true -> {CurQ,CurQLen}
 		end,
-				checkMessageQ(false,BigListSize,Names,{NumSent, NumRecd},HashTable,
+				checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, 
 				  NewStates, NumStates, {NewQ,NewQLen});
 	
 	pause -> % report # messages sent/received
@@ -1123,7 +1046,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
 
 		resume -> % TODO write user scripts to send pause and resume to all nodes
 		    checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd},
-				  HashTable, NewStates, NumStates,{CurQ,CurQLen});
+				  HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
 		die ->
 		    terminateMe(BigListSize, rootPID(Names))
 	    end;
@@ -1154,7 +1077,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, NewS
                           "again for timeout...~n", [node(), self(),CheckSum]),
                 resumeWorkers(tl(dictToList(Names))),
                 checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, 
-                HashTable, NewStates,NumStates, {CurQ,CurQLen})
+                HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
             end
         end
     end.

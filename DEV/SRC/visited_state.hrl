@@ -1,4 +1,4 @@
--record(visited_state, {state, outstandingacks, seqno}).
+-record(visited_state, {state, done}).
 
 -record(visited_state_with_degs, {state, outstandingacks, indeg, outdeg}).
 
