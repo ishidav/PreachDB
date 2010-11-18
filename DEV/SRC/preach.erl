@@ -194,7 +194,7 @@ createMnesiaTables(Names) ->
     end,
     fragmentron:create_table(visited_state, [{attributes, record_info(fields, visited_state)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
     fragmentron:create_table(state_queue, [{attributes, record_info(fields, state_queue)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
-    mnesia:create_table(epic_num, [{disc_only_copies, NodePool}, {local_content, true}]),
+    mnesia:create_table(epic_num, [{disc_copies, NodePool}, {local_content, true}]),
     lists:foreach(fun(X) -> X ! {ready, {list_to_atom(getSname()),node()}} end, Others),
     ok.
 
@@ -245,7 +245,7 @@ addMnesiaTables(IsUsingMnesia, Names) ->
                         _Else -> ok
                     end;
                 true -> mnesia:start(), 
-                  mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue], 10000], mnesia_frag),
+                  mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue, epic_num], 10000], mnesia_frag),
                   ok;
                 _Else -> ok
             end;
@@ -482,6 +482,29 @@ hashState2Int(State) ->
 rootPID(Names) -> dict:fetch(1,Names).
 
 %%----------------------------------------------------------------------
+%% Function: updateOwners/1, updateOwners/3
+%% Purpose : redo the fragment number to Owner mapping (MNESIA)
+%% Args    : old dict
+%% Returns : new dict
+%%     
+%%----------------------------------------------------------------------
+updateOwners(Names) ->
+    dict:from_list(updateOwners(lists:seq(1, dict:size(Names)), [], [])).
+
+updateOwners([], _Acc, Result) -> Result;
+updateOwners([FragNum|Rest], Acc, Result) -> 
+    FragName = if FragNum == 1 -> visited_state; true -> list_to_atom("visited_state_frag"++integer_to_list(FragNum)) end,
+    HostList = lists:sort(mnesia:table_info(FragName, where_to_write)),
+    SeenBefore = lists:sort(fun({_,A},{_,B}) -> (A > B) end, lists:filter(fun({H, _}) -> lists:member(H, HostList) end, Acc)),
+    if (HostList == []) -> io:format("Error: Nowhere to write ~w~n", [FragName]), halt();
+      (SeenBefore == []) -> updateOwners(Rest, [{H,1} || H <- tl(HostList)] ++ Acc, Result ++ [{FragNum, {list_to_atom(string:sub_word(atom_to_list(hd(HostList)), 1, $@)), hd(HostList)}}]);
+      true -> % remove the elements from Acc and add them back in with incremented count
+        ExistingAcc = [{H1, C+1} || H1 <- HostList, H1 =/= element(1,hd(SeenBefore)), {H2,C} <- Acc, H1 == H2],
+        NewAcc = [{H1, 1} || H1 <- HostList, H1 =/= element(1,hd(SeenBefore)), not lists:keymember(H1, 1, ExistingAcc)],
+        updateOwners(Rest, ExistingAcc ++ NewAcc ++ [{H, C} || {H, C} <- Acc, H =/= element(1,hd(SeenBefore)), not lists:keymember(H, 1, ExistingAcc)], Result ++ [{FragNum, {list_to_atom(string:sub_word(atom_to_list(element(1,hd(SeenBefore))), 1, $@)), element(1,hd(SeenBefore))}}])
+    end.
+
+%%----------------------------------------------------------------------
 %% Function: start/0
 %% Purpose : A timing wrapper for the parallel version of 
 %%				our model checker.
@@ -499,7 +522,7 @@ start() ->
     {HostList,Nhosts} = hosts(),
     {NamesList, P} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(X) -> io:format("~w~n", [X]) end, NamesList),
-    Names = dict:from_list(lists:zip(lists:seq(1, length(NamesList)), NamesList)),
+    StaticNames = dict:from_list(lists:zip(lists:seq(1, length(NamesList)), NamesList)),
     %% when sending messages, use {PID, pruserX@node} ! Message
     %% might want to register(pruserX, self()) so don't need to know PIDs
     %% Names should just be where nodes can send each other messages
@@ -513,8 +536,9 @@ start() ->
     HashTable = createHashTable(IsUsingMnesia),
     StateQueue = state_queue,
     NodeData = epic_num,
-    addMnesiaTables(IsUsingMnesia, Names), % TODO: take names of HashTable, StateQueue, NodeData
+    addMnesiaTables(IsUsingMnesia, StaticNames), % TODO: take names of HashTable, StateQueue, NodeData
     EpicNum = incEpicNum(IsUsingMnesia, NodeData),
+    Names = if IsUsingMnesia -> updateOwners(StaticNames); true -> StaticNames end,
     ACKTable = createACKTable(IsUsingMnesia),
     timer:sleep(4000),
     %mnesia:info(),
@@ -791,12 +815,8 @@ sendStates(nocaching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent)
         % set Owner as function of which node has local copy of frag
         {_,_,_,_,FragHash} = mnesia:table_info(visited_state, frag_hash),
         FragNum = 1+(mnesia_frag_hash:key_to_frag_number(FragHash, First) rem dict:size(Names)), % TODO: this is broken / size(Names) is a hack for # of fragments since I set them equal
-        FragName = if FragNum == 1 -> visited_state; true -> list_to_atom("visited_state_frag"++integer_to_list(FragNum)) end,
-        %HostList = mnesia:table_info(FragName, where_to_write),
-        %Host = lists:nth(((FragNum-1) rem length(HostList))+1, HostList),
-        Host = mnesia:table_info(FragName, where_to_read),
-        Owner = {list_to_atom(string:sub_word(atom_to_list(Host), 1, $@)), Host};
-        %io:format("~w sendStates FragHash=~w FragNum=~w FragName=~w Host=~w Owner=~w~n", [node(), FragHash, FragNum, FragName, Host, Owner]),
+        Owner = dict:fetch(FragNum, Names);
+        %io:format("~w sendStates FragHash=~w FragNum=~w Owner=~w~n", [node(), FragHash, FragNum, Owner]),
         %timer:sleep(1000);
       true ->
         Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names)
