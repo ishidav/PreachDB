@@ -52,9 +52,6 @@ my $resudir   = "RESULTS"; # optional var defining results directory
 my $beamdir   = "ebin";    # optional var defining dir containing beam files
 my $module    = undef;     # required var defining test module 
 my $nnodes    = 1;         # required var defining # of nodes to run on 
-my $statecaching    = '';  # optional var choosing whether to cach states 
-my $mprofile  = undef;     # optional var choosing whether to mem profiling 
-my $nprofile  = undef;     # optional var choosing whether to network profiling 
 my $local     = '';        # optional var choosing whether to run locally
 my $mnesia    = undef;     # optional var choosing whether to use mnesia
 
@@ -64,9 +61,6 @@ GetOptions ('help'    => \$help,
 	    'beamdir=s' => \$beamdir,
 	    'module=s'  => \$module,
 	    'nnodes=i'  => \$nnodes, 
-	    'statecaching'  => \$statecaching, 
-	    'mprofile'  => \$mprofile,
-	    'nprofile'  => \$nprofile,
 	    'local'       => \$local,
 	    'mnesia'    => \$mnesia
     ) or usage("ERROR: Invalid command option");
@@ -132,8 +126,6 @@ sub asmErlangCmd{
     $erl_command .= "-run $module autoStart -run init stop ";
 
     if ($local)       {$erl_command .= "-localmode ";}
-    if($statecaching) { $erl_command .= "-statecaching ";}
-    if($nprofile)     { $erl_command .= "-nprofile ";}
     if($mnesia)     { $erl_command .= "-mnesia dir '\"/tmp/mnesia\"' ";}
 
     return $erl_command;
@@ -217,7 +209,7 @@ sub usage{
   print "###########################################\n";
   print "ptest: $msg\n\n";
   print "usage: ptest --resdir=DIRA --beamdir=DIRB --module=MODULE --nnodes=NN";
-  print " --statecaching --mprofile --local\n\n";
+  print " --local  --mnesia\n\n";
   print "where\n";
   print " resdir     is a directory in which results will be saved ";
   print "(default: RESULTS) (CURRENTLY HAS NO EFFECT)\n";
@@ -225,10 +217,8 @@ sub usage{
   print "(default: ebin)\n";
   print " module     is the name of the module being model-checked      (REQUIRED)\n";
   print " nnodes     is the number of nodes to use                      (CURRENTLY HAS NO EFFECT)\n";
-  print " statecaching defines whether to use per-node state-caching\n";
   print " local        defines to run PReach locally\n";
-  print " mprofile     enables memory and cpu profiling                  (CURRENTLY HAS NO EFFECT)\n";
-  print " nprofile     enables network profiileing using the 3rd-party tool vnstat\n";
+  print " mnesia        defines to run PReach with the Mnesia database\n";
   exit;
 }
 

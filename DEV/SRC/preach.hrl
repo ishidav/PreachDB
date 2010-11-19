@@ -29,9 +29,6 @@
 %%%%%%% MACROS #########
 -define(BLOOM_N_ENTRIES, 40000000).
 -define(BLOOM_ERR_PROB, 0.000001).
-%-define(CACHE_SIZE, 4*1048576).
--define(CACHE_SIZE, 2048).
--define(CACHE_HIT_INDEX, ?CACHE_SIZE + 10).
 -define(PVERSION, 0.5).
 
 
@@ -66,10 +63,12 @@ displayHeader() ->
 displayOptions() ->
     io:format("------------------------------------------~n",[]),
     io:format("PreachDB enabled options:~n~n",[]),
+    io:format("sname        ~s~n",[getSname()]),
+    io:format("is root      [true/false]? ~w~n",[amIRoot()]),
     io:format("localmode    [true/false]? ~w~n",[isLocalMode()]),
-    io:format("statecaching [true/false]? ~w~n",[isCaching()]),
     io:format("mnesia       [true/false]? ~w~n",[isUsingMnesia()]),
-    io:format("mnesia dir ~s~n",[getMnesiaDir()]),
+    io:format("mnesia dir   ~s~n",[getMnesiaDir()]),
+    io:format("cwd          ~s~n",[element(2, file:get_cwd())]),
     io:format("------------------------------------------~n",[]).
 
 
@@ -84,41 +83,6 @@ displayOptions() ->
 %%----------------------------------------------------------------------
 isLocalMode() ->
     case  init:get_argument(localmode) of 
-	{ok, _Args} ->
-            true;
-	error ->
-            false
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: isCaching/0
-%% Purpose : Test if -statecaching was passed to erl.
-%%               
-%% Args    :  
-%%
-%% Returns : true or false 
-%%     
-%%----------------------------------------------------------------------
-isCaching() ->
-    case init:get_argument(statecaching) of
-	{ok, _Args} ->
-            true;
-	error ->
-            false
-    end.
-
-
-%%----------------------------------------------------------------------
-%% Function: isExtProfiling/0
-%% Purpose : Test if -nprofile was passed to erl.
-%%               
-%% Args    :  
-%%
-%% Returns : true or false 
-%%     
-%%----------------------------------------------------------------------
-isExtProfiling() ->     
-    case init:get_argument(nprofile) of
 	{ok, _Args} ->
             true;
 	error ->
@@ -188,15 +152,3 @@ getSname() ->
 amIRoot() ->     
     MySname = getSname(),
     string:equal(MySname, "pruser0").
-
-%--------------------------------------------------------------------------------
-%                             Revision History
-%
-%
-% $Log: preach.hrl,v $
-% Revision 1.2  2009/09/19 03:23:28  depaulfm
-% Implemented a barrier for PReach's initialization; Added hooks for the network profiling
-%
-% Revision 1.1  2009/07/23 16:26:24  depaulfm
-% Header file containing macro defns and some util functions
-%

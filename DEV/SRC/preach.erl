@@ -35,17 +35,6 @@
 %% configuration-type functions
 timeoutTime() -> 2000.
 
-%% these are load balancing parameters. Still in experimental stage,
-%% will eventually be moved to preach.hrl or integrated into ptest.
-isLoadBalancing() -> false.
-
-balanceFrequency() -> 10000. %10000 div 8.
-
-% Might want to set this to be the number of threads (length(Names)?)
-balanceRatio() -> 8.
-
-balanceTolerence() -> 10000 div 8.
-
 %%----------------------------------------------------------------------
 %% Function: createHashTable/1
 %% Purpose : Routines to abstract away how the hash table is implemented, eg,
@@ -59,10 +48,9 @@ balanceTolerence() -> 10000 div 8.
 %%     
 %%----------------------------------------------------------------------
 createHashTable(IsUsingMnesia) ->
-  if IsUsingMnesia ->
-    visited_state;
-   true -> bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB)
-  end.
+    if IsUsingMnesia -> visited_state;
+      true -> bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB)
+    end.
 
 %%----------------------------------------------------------------------
 %% Function: addElemToHTAndSQReturnIsMember/4
@@ -177,11 +165,6 @@ decACKsOnZeroDelFromSQ(IsUsingMnesia, Element, SeqNo, EpicNo, MyEpic, ACKTable, 
 %%     
 %%----------------------------------------------------------------------
 createMnesiaTables(Names) ->
-    %ce_db:create([  {visited_state, [{disc_copies, [node()]}, 
-    %{local_content, true}, {attributes, record_info(fields, visited_state)}]},
-    %                {state_queue, [{disc_copies, [node()]}, 
-    %{local_content, true}, {attributes, record_info(fields, state_queue)}]}]),
-    %timer:sleep(1000),
     mnesia:start(),
     mnesia:change_table_copy_type(schema, node(), disc_copies),
     Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
@@ -207,8 +190,6 @@ createMnesiaTables(Names) ->
 %%----------------------------------------------------------------------
 attachToMnesiaTables(Names) ->
     {_, RootNode} = rootPID(Names),
-    %timer:sleep(2000),
-    %ce_db:connect(RootNode, [], [visited_state, state_queue]).
     mnesia:start(),
     timer:sleep(500),
     spawn(RootNode, ce_db, probe_db_nodes, [{list_to_atom(getSname()),node()}]),
@@ -233,23 +214,18 @@ attachToMnesiaTables(Names) ->
 addMnesiaTables(IsUsingMnesia, Names) ->
     IAmRoot = amIRoot(),
     MnesiaSchemaExists = mnesia:system_info(use_dir),
-    case IsUsingMnesia of 
-        true ->
-            mnesia:change_config(dc_dump_limit, 40),
-            mnesia:change_config(dump_log_write_threshold, 50000),
-            case MnesiaSchemaExists of
-                false ->
-                    case IAmRoot of
-                        true -> createMnesiaTables(Names);
-                        false -> attachToMnesiaTables(Names);
-                        _Else -> ok
-                    end;
-                true -> mnesia:start(), 
-                  mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue, epic_num], 10000], mnesia_frag),
-                  ok;
-                _Else -> ok
-            end;
-        _Else -> ok
+    if IsUsingMnesia ->
+        mnesia:change_config(dc_dump_limit, 40),
+        mnesia:change_config(dump_log_write_threshold, 50000),
+        if MnesiaSchemaExists ->
+            mnesia:start();
+          true ->
+            if IAmRoot -> createMnesiaTables(Names);
+              true -> attachToMnesiaTables(Names)
+            end
+        end,
+        mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue, epic_num], 10000], mnesia_frag);
+      true -> ok
     end.
 
 %%----------------------------------------------------------------------
@@ -265,7 +241,7 @@ firstOfStateQueue(IsUsingMnesia, StateQueue) ->
         if length(SQKeys) == 0 -> [];
           true -> lists:sublist(SQKeys, random:uniform(length(SQKeys)), random:uniform(2000))
         end;
-       true -> []
+      true -> []
     end.
 
 %%----------------------------------------------------------------------
@@ -298,101 +274,10 @@ incEpicNum(IsUsingMnesia, NodeData) ->
 %%     
 %%----------------------------------------------------------------------
 stopMnesia(IsUsingMnesia) ->
-    case IsUsingMnesia of 
-	true ->
-	    mnesia:stop(),
-	    ok;
-	false->
-	    ok
-    end.  
-
-%%----------------------------------------------------------------------
-%% Function: createStateCache/1, deleteStateCache/1
-%% Purpose : Routines to abstract away how the cache is implemented, eg,
-%%           erlang lists, ets or dict, etc...
-%%           Note that w/ ets the table is referenced by its name,
-%%          which type is an atom
-%%               
-%% Args    : boolean resulting from calling isCaching() 
-%%
-%% Returns : 
-%%     
-%%----------------------------------------------------------------------
-createStateCache(Create) ->
-    if Create ->
-	    ets:new(cache,[set,private,named_table]),
-	    ets:insert(cache,[{?CACHE_HIT_INDEX, 0}]);
-       true ->
-	    ok
+    if IsUsingMnesia -> mnesia:stop(), ok;
+      true -> ok
     end.
 
-deleteStateCache(Delete) ->
-    if Delete ->
-	    ets:delete(cache);
-       true ->
-	    ok
-    end.
-
-%%----------------------------------------------------------------------
-%% Function: stateCacheLookup/1
-%% Purpose : Routines to abstract away how the cache is implemented, eg,
-%%           erlang lists, ets or dict, etc...
-%%               
-%% Args    : cache location 
-%%
-%%
-%% Returns : A list containing a tuple w/ the element matching the cache 
-%%          location in the following format {Index, State}
-%%          
-%%----------------------------------------------------------------------
-stateCacheLookup(CacheIndex) ->
-    ets:lookup(cache, CacheIndex).
-
-%%----------------------------------------------------------------------
-%% Function: stateCacheInsert/2
-%% Purpose : Routines to abstract away how the cache is implemented, eg,
-%%           erlang lists, ets or dict, etc...
-%%               
-%% Args    : cache location and element to be cached
-%%
-%%
-%% Returns : true
-%%          
-%%----------------------------------------------------------------------
-stateCacheInsert(CacheIndex, State) ->
-    ets:insert(cache,[{CacheIndex, State}]).
-
-%%----------------------------------------------------------------------
-%% Function: getHitCount/0
-%% Purpose : Used only when caching send states. 
-%% Args    : 
-%%	     
-%% Returns :
-%%     
-%%----------------------------------------------------------------------
-getHitCount() -> 
-    element(2,hd(stateCacheLookup(?CACHE_HIT_INDEX))).
-
-%%----------------------------------------------------------------------
-%% Function: mynode/3
-%% Purpose : Enumerate list of hosts where erlang workers are waiting for 
-%%           jobs 	
-%% Args    : Index is the number of workers to be used. Important Index zero
-%%          must be the master from which you're spawning the jobs   
-%%           HostList is the list of hosts
-%%           Nhosts is the number of hosts
-%%
-%% Requires: a symlink to $PREACH/VER/TB,ie, ln -s $PREACH/VER/TB hosts	
-%%           from the directory you're running erl
-%% 
-%% Returns : list of hosts
-%%     
-%%----------------------------------------------------------------------
-mynode(Index, HostList, Nhosts) -> 
-    list_to_atom(lists:append( 
-		   lists:append(
-		     lists:append("pruser", integer_to_list(Index)), "@"),
-		   atom_to_list(lists:nth(1+((Index-1) rem Nhosts), HostList)))).
 %%----------------------------------------------------------------------
 %% Function: hosts/0 
 %% Purpose : 
@@ -406,18 +291,18 @@ mynode(Index, HostList, Nhosts) ->
 hosts() ->
     Localmode = init:get_argument(localmode),
     if (Localmode == error) ->
-	    case file:open("hosts",[read]) of
-		{ok, InFile} ->
-		    read_inFile(InFile,[], 1);
-		{error, Reason} ->
-		    io:format("Could not open 'hosts'. Erlang reason: '~w'. ",[Reason]),
-		    io:format("Read www/erlang.doc/man/io.html for more info...exiting~n",[]),
-		    exit; % ERROR_HANDLING?
-		_Other -> io:format("Error in parsing return value of file:open...exiting~n",[]),
-			  exit  % ERROR_HANDLING?
-	    end;
-       true ->
-	    {[os:getenv("PREACH_MACHINE")], 1}
+        case file:open("hosts",[read]) of
+          {ok, InFile} ->
+            read_inFile(InFile,[], 1);
+          {error, Reason} ->
+            io:format("Could not open 'hosts'. Erlang reason: '~w'. ",[Reason]),
+            io:format("Read www/erlang.doc/man/io.html for more info...exiting~n",[]),
+            exit; % ERROR_HANDLING?
+          _Other -> io:format("Error in parsing return value of file:open...exiting~n",[]),
+            exit  % ERROR_HANDLING?
+        end;
+      true ->
+        {[os:getenv("PREACH_MACHINE")], 1}
     end.
 
 %%----------------------------------------------------------------------
@@ -434,16 +319,14 @@ hosts() ->
 %%----------------------------------------------------------------------
 read_inFile(InFile,HostList,SLine) ->
     case io:read(InFile, "", SLine) of
-        {ok, Host, _ELine} ->
-            read_inFile(InFile, lists:append(HostList, [Host]), SLine + 1);
-	
-        {eof, ELine} ->
-	    {HostList, ELine-1};
-	
-        {error, ErrInfo, Err} ->
-            io:format("Error in reading file ~w with status",[InFile]),
-            io:format(" ~w; ~w ...exiting~n",[ErrInfo, Err]);
-        Other -> Other
+      {ok, Host, _ELine} ->
+        read_inFile(InFile, lists:append(HostList, [Host]), SLine + 1);
+      {eof, ELine} ->
+        {HostList, ELine-1};
+      {error, ErrInfo, Err} ->
+        io:format("Error in reading file ~w with status",[InFile]),
+        io:format(" ~w; ~w ...exiting~n",[ErrInfo, Err]);
+      Other -> Other
     end.
 
 %%----------------------------------------------------------------------
@@ -456,17 +339,17 @@ read_inFile(InFile,HostList,SLine) ->
 %%     
 %%----------------------------------------------------------------------
 compressState(State) ->
-%	stateToInt(State).
+    %stateToInt(State).
     stateToBits(State).
-	%State.
+    %State.
 
 decompressState(CompressedState) ->
-%		intToState(CompressedState).
+    %intToState(CompressedState).
     bitsToState(CompressedState).
-	%	CompressedState.
+    %CompressedState.
 
-hashState2Int(State) ->
-    erlang:phash2(State,round(math:pow(2,32))).
+%hashState2Int(State) ->
+%    erlang:phash2(State,round(math:pow(2,32))).
 
 %%----------------------------------------------------------------------
 %% Function: rootPID/1
@@ -513,13 +396,9 @@ updateOwners([FragNum|Rest], Acc, Result) ->
 %%     
 %%----------------------------------------------------------------------
 start() ->
-    %% print who I am
-    io:format("Hello from ~s, my mnesia dir is ~s~n", [getSname(), getMnesiaDir()]),
     register(list_to_atom(getSname()), self()),
     IAmRoot = amIRoot(),
-    if IAmRoot -> io:format("I am root~n"); true -> ok end,
-    io:format("My cwd is ~s~n", [element(2, file:get_cwd())]),
-    {HostList,Nhosts} = hosts(),
+    {HostList,_Nhosts} = hosts(),
     {NamesList, P} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(X) -> io:format("~w~n", [X]) end, NamesList),
     StaticNames = dict:from_list(lists:zip(lists:seq(1, length(NamesList)), NamesList)),
@@ -538,62 +417,49 @@ start() ->
     NodeData = epic_num,
     addMnesiaTables(IsUsingMnesia, StaticNames), % TODO: take names of HashTable, StateQueue, NodeData
     EpicNum = incEpicNum(IsUsingMnesia, NodeData),
-    Names = if IsUsingMnesia -> updateOwners(StaticNames); true -> StaticNames end,
     ACKTable = createACKTable(IsUsingMnesia),
     timer:sleep(4000),
-    %mnesia:info(),
+    Names = if IsUsingMnesia -> updateOwners(StaticNames); true -> StaticNames end,
 
     {A1,A2,A3} = now(),
     random:seed(A1, A2, A3),
 
     if IAmRoot ->
-           %% barrier here until all nodes up: wait for message from all others
-           Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
-           barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
-           T0 = now(),
-           sendStates(startstates(), null, 1, EpicNum, Names),
-           NumSent = length(startstates()),
+        %% barrier here until all nodes up: wait for message from all others
+        Others = [OtherNodes || OtherNodes <- dictToList(Names),  OtherNodes =/= {list_to_atom(getSname()),node()}],
+        barrier(Others, lists:zip(Others, lists:duplicate(length(Others), 0))),
+        T0 = now(),
+        sendStates(startstates(), null, 1, EpicNum, Names),
+        NumSent = length(startstates()),
 
-           reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
+        reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
 
-           if IsUsingMnesia -> mnesia:info(),
-               NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
-             true -> NumMnesiaUniqStates = 0
-           end,
-           io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
-           {NumStates, NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
-           Dur = timer:now_diff(now(), T0)*1.0e-6,
-           NumPurged = purgeRecQ(0),
-           if IsUsingMnesia -> NumUniqStates = NumMnesiaUniqStates;
-             true -> NumUniqStates = NumStates
-           end,
-           deleteStateCache(isCaching()),
+        if IsUsingMnesia -> mnesia:info(),
+            NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
+          true -> NumMnesiaUniqStates = 0
+        end,
+        io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
+        {NumStates, _NumHits} = waitForTerm(dictToList(Names), 0, 0, 0),
+        Dur = timer:now_diff(now(), T0)*1.0e-6,
+        NumPurged = purgeRecQ(0),
+        if IsUsingMnesia -> NumUniqStates = NumMnesiaUniqStates;
+          true -> NumUniqStates = NumStates
+        end,
 
-           io:format("----------~n"),
-           io:format("REPORT:~n"),
-           io:format("\tTotal of ~w unique states visited over all runs~n", [NumUniqStates]),
-           io:format("\tTotal of ~w non-unique states visited this run~n", [NumStates]),
-           io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
-           io:format("\tExecution time [current run]: ~f seconds~n", [Dur]),
-           io:format("\tNon-unique states visited per second [current run]: ~w~n", [trunc(NumStates/Dur)]),
-           io:format("\tNon-unique states visited per second per thread [current run]: ~w~n", [trunc((NumStates/Dur)/P)]),
-           IsCaching = isCaching(),
-           if IsCaching ->
-               io:format("\tTotal of ~w state-cache hits (average of ~w)~n", 
-		      [NumHits, trunc(NumHits/P)]);
-              true -> ok
-           end,
-           IsLB = isLoadBalancing(),
-           if IsLB ->
-               io:format("\tLoad balancing enabled~n");
-           true ->
-               io:format("\tLoad balancing disabled~n")
-           end;
-       true -> rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
-           reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
-           io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
-           mnesia:info(),
-           timer:sleep(5000)
+        io:format("----------~n"),
+        io:format("REPORT:~n"),
+        io:format("\tTotal of ~w unique states visited over all runs~n", [NumUniqStates]),
+        io:format("\tTotal of ~w non-unique states visited this run~n", [NumStates]),
+        io:format("\t~w messages purged from the receive queue~n", [NumPurged]),
+        io:format("\tExecution time [current run]: ~f seconds~n", [Dur]),
+        io:format("\tNon-unique states visited per second [current run]: ~w~n", [trunc(NumStates/Dur)]),
+        io:format("\tNon-unique states visited per second per thread [current run]: ~w~n", [trunc((NumStates/Dur)/P)]);
+      true ->
+        rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
+        reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
+        io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
+        mnesia:info(),
+        timer:sleep(5000)
     end,
     stopMnesia(IsUsingMnesia),
     io:format("----------~n"),
@@ -653,24 +519,19 @@ lateStart() ->
 %%----------------------------------------------------------------------
 waitForTerm(PIDs, TotalStates, TotalHits, Cover) ->
     if Cover < length(PIDs) ->
-	    receive
-		{DiffPID, {NumStates, NumHits}, done} -> 
-		    io:format("~w PID ~w: worker thread ~w has reported " ++
-			      "termination~n", [node(), self(), DiffPID]),%;
-		    waitForTerm(PIDs,TotalStates + NumStates, 
-				TotalHits + NumHits, Cover +1);
-		{'EXIT', Pid, Reason } ->
-		    exitHandler(Pid,Reason),
-		    NumStates = 0, NumHits = 0,
-		    waitForTerm(PIDs,TotalStates + NumStates, 
-				TotalHits + NumHits, Cover)
-	    end;
-       true ->
-	    {TotalStates, TotalHits}
+        receive
+          {DiffPID, {NumStates, NumHits}, done} -> 
+            io:format("~w PID ~w: worker thread ~w has reported " ++
+                "termination~n", [node(), self(), DiffPID]),
+            waitForTerm(PIDs,TotalStates + NumStates, TotalHits + NumHits, Cover +1);
+          {'EXIT', Pid, Reason } ->
+            exitHandler(Pid,Reason),
+            NumStates = 0,
+            NumHits = 0,
+            waitForTerm(PIDs,TotalStates + NumStates, TotalHits + NumHits, Cover)
+        end;
+      true -> {TotalStates, TotalHits}
     end.
-
-
-
 
 %%----------------------------------------------------------------------
 %% Function: purgeRecQ/1
@@ -682,15 +543,13 @@ waitForTerm(PIDs, TotalStates, TotalHits, Cover) ->
 %%----------------------------------------------------------------------
 purgeRecQ(Count) ->
     receive
-	{'EXIT', Pid, Reason } ->
-	    exitHandler(Pid,Reason),
-	    purgeRecQ(Count);
-	_Garbage ->
-	    io:format("Garbage =~w~n",[_Garbage]),
-	    purgeRecQ(Count+1)
-    after
-	100 ->
-	    Count
+      {'EXIT', Pid, Reason } ->
+        exitHandler(Pid,Reason),
+        purgeRecQ(Count);
+      _Garbage ->
+        io:format("Garbage =~w~n",[_Garbage]),
+        purgeRecQ(Count+1)
+      after 100 -> Count
     end.
 
 %%----------------------------------------------------------------------
@@ -725,14 +584,8 @@ exitHandler(Pid, Reason, NumVS, MemQSize) ->
     io:format("~w ~w Non-unique states visited this run: ~w, in-memory queue size: ~w~n",[node(), self(), NumVS, MemQSize]),
     stopMnesia(isUsingMnesia()),
     if Reason =/= normal ->
-	    %case net_kernel:connect(node(Pid)) of 
-		%true -> ok;
-		%_Other  -> 
-		%    io:format("~n Exiting immediately...~n",[]),
-		%    halt()
-	    %end;
-            halt();
-       true -> ok
+        halt();
+      true -> ok
     end.
 
 %%----------------------------------------------------------------------
@@ -751,49 +604,7 @@ exitHandler(Pid, Reason, NumVS, MemQSize) ->
 sendStates(States, Parent, SeqNo, EpicNo, Names) -> 
     %io:format("~w PID ~w: sendStates ~w ~w ~w ~w~n", [node(), self(), States, Parent, SeqNo, EpicNo]),
     Me = {list_to_atom(getSname()), node()},
-    StateCaching = isCaching(),
-    if StateCaching  ->
-	    sendStates(caching, States, Parent, SeqNo, EpicNo, Me, Names, 0);
-       true ->
-	    sendStates(nocaching, States, Parent, SeqNo, EpicNo, Me, Names, 0)
-    end.
-   
-
-%%----------------------------------------------------------------------
-%% Function: sendStates/8 (State Caching)
-%% Purpose : Sends a list of states to their respective owners, one at a time.
-%%           DOCUMENT: Explain how state caching works		
-%%
-%% Args    : First is the state we're currently sending
-%%	     Rest are the rest of the states to send
-%%	     Names is a list of PIDs
-%%           NumSent is the number of states sent    
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-sendStates(caching, [], _Parent, _SeqNo, _EpicNo, _Me, _Names, NumSent) ->
-    NumSent;
-
-sendStates(caching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent) ->
-    % TODO set Owner as function of which node has local copy of frag
-    Owner = dict:fetch(1+erlang:phash2(First,dict:size(Names)), Names),
-    CacheIndex = erlang:phash2(First, ?CACHE_SIZE)+1, % range is [1,2048]
-    CacheLookup = stateCacheLookup(CacheIndex),
-    CompactedState = hashState2Int(First),
-    WasSent = if Owner == Me -> % my state - send, do not cache
-		      Owner ! {compressState(First), Parent, SeqNo, EpicNo, Me, state},
-		      1;
-		 length(CacheLookup) > 0, element(2,hd(CacheLookup)) == CompactedState -> %First -> 
-			% not my state, in cache - do not send
-		      stateCacheInsert(?CACHE_HIT_INDEX, getHitCount()+1),
-		      0;
-		 true -> % not my state, not in cache - send and cache
-		      stateCacheInsert(CacheIndex, hashState2Int(First)),
-		      Owner ! {compressState(First), Parent, SeqNo, EpicNo, Me, state},
-		      1
-	      end,
-    sendStates(caching, Rest, Parent, SeqNo, EpicNo, Me, Names, NumSent + WasSent);
-
+    sendStates(nocaching, States, Parent, SeqNo, EpicNo, Me, Names, 0).
 
 %%----------------------------------------------------------------------
 %% Function: sendStates/8 (NO State Caching)
@@ -825,26 +636,6 @@ sendStates(nocaching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent)
     sendStates(nocaching, Rest, Parent, SeqNo, EpicNo, Me, Names, NumSent + 1).
 
 %%----------------------------------------------------------------------
-%% Function: sendExtraStates/3 
-%% Purpose : Redirects owned states to other threads for expansion.
-%%				Used for load balancing. Such states are reffered to
-%%				as "extra states".
-%%              
-%% Args    : OtherPID is the PID of the thread to send states to
-%%			 First is the current state to send
-%%           Rest are the rest of the states to send
-%%           NumToSend is the length of Rest 
-%% Returns : ok
-%%     
-%%----------------------------------------------------------------------
-sendExtraStates(_OtherPID, Rest, 0) ->
-	Rest;
-
-sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
-	OtherPID ! {First, extraState},
-	sendExtraStates(OtherPID, Rest, NumToSend-1).
-
-%%----------------------------------------------------------------------
 %% Function: reach/8
 %% Purpose : Removes the first state from the list, 
 %%		generates new states returned by the call to transition that
@@ -867,39 +658,29 @@ sendExtraStates(OtherPID, [First|Rest], NumToSend) ->
 %%     
 %%----------------------------------------------------------------------
 reach([FirstState | RestStates], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStateList, Count, QLen) ->
-            %io:format("~w in reach(~w)~n", [node(), FirstState]),
-	    BalFreq = balanceFrequency(),
-		IsLB = isLoadBalancing(),
-		if IsLB and ((Count rem BalFreq) == 4000)  ->
-			sendQSize(Names, dict:size(Names), QLen, RestStates, {NumSent,NumRecd});
-		true -> do_nothing
-		end, 
+    %io:format("~w in reach(~w)~n", [node(), FirstState]),
+    profiling(0, 0, NumSent, NumRecd, Count, QLen),
+    CurState = decompressState(FirstState),
+    NewStates = transition(CurState),
+    % ACKTable.insert({S, length(S.children), seqno})
+    {ReqsExplore, SeqNo} = addElemInACKTable(isUsingMnesia(), FirstState, length(NewStates), ACKTable, StateQueue),
 
-		profiling(0, 0, NumSent, NumRecd, Count, QLen),
-	    CurState = decompressState(FirstState),
-	    NewStates = transition(CurState),
-	    % ACKTable.insert({S, length(S.children), seqno})
-	    {ReqsExplore, SeqNo} = addElemInACKTable(isUsingMnesia(), FirstState, length(NewStates), ACKTable, StateQueue),
+    if ReqsExplore ->
+        EndFound = stateMatch(CurState,End),
+        if EndFound ->
+            ThisNumSent = 0,
+            io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
+            rootPID(Names) ! end_found;
+          true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, EpicNum, Names)
+        end;
+      true -> ThisNumSent = 0
+    end,
 
-            if ReqsExplore ->
-                EndFound = stateMatch(CurState,End),
-                if EndFound ->
-                    ThisNumSent = 0,
-                    io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
-                    rootPID(Names) ! end_found;
-    	       true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, EpicNum, Names)
-    	    end;
-          true -> ThisNumSent = 0
-        end,
-
-		Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, 
-								HashTable, StateQueue, ACKTable, EpicNum, [], 0, {RestStates, QLen-1} ),
- 	    if Ret == done ->
-			done;
-		true -> {NewQ, NewNumRecd, NewQLen} = Ret,
-			reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, 
-			{NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
-		end;
+    Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {RestStates, QLen-1} ),
+    if Ret == done -> done;
+      true -> {NewQ, NewNumRecd, NewQLen} = Ret,
+        reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
+    end;
 
 % StateQ is empty, so check for messages. If none are found, we die
 reach([], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStates, Count, _QLen) ->
@@ -921,19 +702,6 @@ reach([], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRec
         reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NewNumRecd}, [], Count, length(NewQ))
     end.
 
-sendQSize(_Names, 0, _QSize, _StateQ, _NumMess) -> done;
-
-sendQSize(Names, Index, QSize, StateQ, {NumSent, NumRecd}) ->
-	Owner = dict:fetch(Index, Names),
-        Me = {list_to_atom(getSname()), node()},
-	if Owner /= Me ->
-	%	io:format("~w PID ~w: Reporting a QSize of ~w~n",[node(), self(),NewQSize]),
-		Owner ! {QSize, Me, myQSize},
-		sendQSize(Names, Index-1, QSize,StateQ,{NumSent,NumRecd});
-	true -> do_nothing
-	end,
-	sendQSize(Names, Index-1, QSize,StateQ,{NumSent,NumRecd}).
-
 %%----------------------------------------------------------------------
 %% Function: dictToList/1
 %% Purpose : 
@@ -945,7 +713,6 @@ sendQSize(Names, Index, QSize, StateQ, {NumSent, NumRecd}) ->
 %%     
 %%----------------------------------------------------------------------
 dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
-
 
 %%----------------------------------------------------------------------
 %% Function: profile/5
@@ -965,18 +732,17 @@ dictToList(Names) -> element(2,lists:unzip(lists:sort(dict:to_list(Names)))).
 %%---------------------------------------------------------------------
 profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
     if (Count rem 10000)  == 0 -> 
-	    io:format("VS=~w,  NS=~w, NR=~w" ++ 
-		      " |MemSys|=~.2f MB, |MemProc|=~.2f MB, |InQ|=~w, |StateQ|=~w, Time=~w-> ~w PID ~w~n", 
-		      [Count, NumSent, NumRecd,
-		       erlang:memory(system)/1048576, 
-		       erlang:memory(processes)/1048576,  	
-		       element(2,process_info(self(),message_queue_len)), 
-				QLen,
-				element(2,now())+element(3,now())*1.0e-6,
-		       node(),
-		       self()]);
-
-       true -> ok
+        io:format("VS=~w,  NS=~w, NR=~w" ++ 
+            " |MemSys|=~.2f MB, |MemProc|=~.2f MB, |InQ|=~w, |StateQ|=~w, Time=~w-> ~w PID ~w~n", 
+            [Count, NumSent, NumRecd,
+            erlang:memory(system)/1048576, 
+            erlang:memory(processes)/1048576,  	
+            element(2,process_info(self(),message_queue_len)), 
+                QLen,
+                element(2,now())+element(3,now())*1.0e-6,
+            node(),
+            self()]);
+      true -> ok
     end.
 
 %%----------------------------------------------------------------------
@@ -1039,47 +805,25 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
         end,
         checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
-	{State, extraState} ->
-			checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, 
-				  [State|NewStates], NumStates+1,{CurQ,CurQLen});
+    pause -> % report # messages sent/received
+        rootPID(Names) ! {NumSent, NumRecd, poll},
+        receive     
+          {'EXIT', Pid, Reason } ->
+            exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
+          resume -> % TODO write user scripts to send pause and resume to all nodes
+            checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
+          die -> terminateMe(BigListSize, rootPID(Names))
+        end;
 
-	{OtherSize, OtherPID, myQSize} ->
-		LB = OtherSize + balanceTolerence(),
-		{NewQ, NewQLen} = if CurQLen > LB ->
-			io:format("~w PID ~w: My Q: ~w, Other Q: ~w, sending ~w extra states to PID ~w~n", 
-						[node(), self(),CurQLen,OtherSize, 
-						(CurQLen-OtherSize) div balanceRatio(), 
-						OtherPID]),
-			T1 = sendExtraStates(OtherPID, CurQ, (CurQLen - OtherSize) div balanceRatio()),
-			T2 = CurQLen - ((CurQLen - OtherSize) div balanceRatio()),
-			{T1,T2};
-		true -> {CurQ,CurQLen}
-		end,
-				checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, 
-				  NewStates, NumStates, {NewQ,NewQLen});
-	
-	pause -> % report # messages sent/received
-	    rootPID(Names) ! {NumSent, NumRecd, poll},
-	    receive     
-		{'EXIT', Pid, Reason } ->
-		    exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
+    die -> 
+        terminateMe(BigListSize, rootPID(Names));
 
-		resume -> % TODO write user scripts to send pause and resume to all nodes
-		    checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd},
-				  HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
-		die ->
-		    terminateMe(BigListSize, rootPID(Names))
-	    end;
+    {'EXIT', Pid, Reason } ->
+        exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
 
-	die -> 
-	    terminateMe(BigListSize, rootPID(Names));
-
-	{'EXIT', Pid, Reason } ->
-	    exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
-
-	end_found -> 
-	    terminateAll(tl(dictToList(Names))),
-	    terminateMe(BigListSize, rootPID(Names))
+    end_found -> 
+        terminateAll(tl(dictToList(Names))),
+        terminateMe(BigListSize, rootPID(Names))
 
     after Timeout -> % wait for timeoutTime() ms if root
         if Timeout == 0 ->  % non-blocking case, return 
@@ -1096,12 +840,10 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
                 io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
                           "again for timeout...~n", [node(), self(),CheckSum]),
                 resumeWorkers(tl(dictToList(Names))),
-                checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, 
-                HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+                checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
             end
         end
     end.
-
 
 %%----------------------------------------------------------------------
 %% Function: pollWorkers/2 
@@ -1123,14 +865,13 @@ pollWorkers([ThisPID | Rest], {RootSent, RootRecd}) ->
     ThisPID ! pause,
     {S, R} = pollWorkers(Rest, {RootSent, RootRecd}),
     receive
-	{'EXIT', Pid, Reason } ->
-	    exitHandler(Pid,Reason);
-
-	{ThisSent, ThisRecd, poll} ->
-	    io:format("~w PID ~w: Got a worker CommAcc of {~w,~w}~n", 
-		      [node(), self(),ThisSent,ThisRecd]),
-	    {S+ThisSent, R+ThisRecd}
+      {'EXIT', Pid, Reason } -> exitHandler(Pid,Reason);
+      {ThisSent, ThisRecd, poll} ->
+        io:format("~w PID ~w: Got a worker CommAcc of {~w,~w}~n", 
+            [node(), self(),ThisSent,ThisRecd]),
+        {S+ThisSent, R+ThisRecd}
     end.
+
 %%----------------------------------------------------------------------
 %% Function: resumeWorkers/1
 %% Purpose :  
@@ -1151,16 +892,9 @@ resumeWorkers(PIDs) ->
 %%     
 %%----------------------------------------------------------------------
 terminateMe(NumStatesVisited, RootPID) ->
-    IsCaching = isCaching(),
-    if IsCaching ->
-	    io:format("~w PID ~w: was told to die; visited ~w non-unique states; ~w " ++ 
-		      "state-cache hits~n", [node(), self(), NumStatesVisited, getHitCount()]),
-	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, getHitCount()}, done};
-       true ->
-	    io:format("~w PID ~w: was told to die; visited ~w non-unique states; ~n", 
-		      [node(), self(), NumStatesVisited]),
-	    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, 0}, done}
-    end, 
+    io:format("~w PID ~w: was told to die; visited ~w non-unique states; ~n", 
+        [node(), self(), NumStatesVisited]),
+    RootPID ! {{list_to_atom(getSname()), node()}, {NumStatesVisited, 0}, done},
     done.
 
 %%----------------------------------------------------------------------
@@ -1240,191 +974,20 @@ resumeMsg() ->
 barrier([], _Table) -> ok; % hack by Brad to handle the case where P=1
 
 barrier(PIDs, Table) ->
-receive
-    {ready, Pid} ->
+    receive
+      {ready, Pid} ->
         io:format("barrier: Rx ready from ~w~n",[Pid]),
         NewTable = lists:keyreplace(Pid,1,Table,{Pid,1}),
         NewCount = lists:foldl(fun(X,Acc) -> Acc + element(2,X) end, 0, NewTable),
         if NewCount < length(PIDs) ->
-                barrier(PIDs,NewTable);
-           true -> ok
+            barrier(PIDs,NewTable);
+          true -> ok
         end;
-
-    _Other ->
-
-        barrier(PIDs, Table)
-after 60000 ->
+      _Other -> barrier(PIDs, Table)
+    after 60000 ->
         io:format("barrier: ERROR: Haven't got all ack after 60s... sending die"
-                  ++ " to ~w~n",[PIDs]),
-        lists:map(fun(X) -> X ! die end, PIDs)    ,
+            ++ " to ~w~n",[PIDs]),
+        lists:map(fun(X) -> X ! die end, PIDs),
         io:format("checkAck: ~w ~w halting for now",[node(), self()]),
         halt()
-end.
-
-
-%%----------------------------------------------------------------------
-%% Function: startExternalProfiling/1
-%% Purpose : Implements a simple communication w/ ptest
-%%          to start the external profiling tools
-%% Args    : boolean
-%% Returns :
-%%     
-%%----------------------------------------------------------------------
-startExternalProfiling(IsExtProfiling) ->
-    case IsExtProfiling of 
-	true ->
-	    os:cmd("touch /tmp/.preach");
-	false->
-	    ok
-    end.  
-
-%--------------------------------------------------------------------------------
-%                             Revision History
-%
-%
-% $Log: preach.erl,v $
-% Revision 1.36  2009/10/02 01:24:24  binghamb
-% Comments and fixed some ugly formatting.
-%
-% Revision 1.35  2009/09/24 02:21:47  binghamb
-% Merged two implementations of checkMessageQ into one. Makes changing the code easier, very slightly changes the algrithm to accept 'pause' messages with each call to checkMessageQ rather than only non-recursive calls. Does not affect correctness. Also fixed a bug related to barrier where deadlock occurs when running a single thread.
-%
-% Revision 1.34  2009/09/24 00:29:02  binghamb
-% Implemented Kumar and Mercer-esq load balancing scheme. Enable/Disable by setting function isLoadBalancing() true or false, and other load balancing parameters. Also changed the model checking algorithm to a tighter recurrence of expand/send/receive to facilitate load balancing and a strong sense of what an iteration is.
-%
-% Revision 1.33  2009/09/19 03:23:28  depaulfm
-% Implemented a barrier for PReach's initialization; Added hooks for the network profiling
-%
-% Revision 1.32  2009/08/24 18:22:28  depaulfm
-% Moved hash table membership and insertion to checkMessageQ to reflect Stern and Dill's algorithm
-%
-% Revision 1.31  2009/08/22 19:52:00  depaulfm
-% By adding the exit handler I introduced a bug in waitForTerm; I re-wrote waitForTerm so that it properly handles EXIT messages from workers
-%
-% Revision 1.30  2009/08/22 18:17:20  depaulfm
-% Abstracted away how the hash table is implemented
-%
-% Revision 1.29  2009/08/22 17:34:14  depaulfm
-% Finished abstracting state caching; Modified state caching to store only the 32-bit hashed value of states; added EXIT handler routine together w/ process_flag to trap on exit; code cleanup
-%
-% Revision 1.28  2009/08/19 05:08:20  depaulfm
-% Fixed start/autoStart funs by reverting prior intent of defining number of threads on a subset of names in the hosts file; added a profiling function; tested n5_peterson and n6_peterson on 8 threads
-%
-% Revision 1.27  2009/08/18 22:03:00  depaulfm
-% Added setup fun to cleanly handle localmode vs distributed mode; replaced spawn w/ spawn_link so that when a worker dies the root gets notified; fixed path the hrl file
-%
-% Revision 1.26  2009/07/23 16:28:35  depaulfm
-% Added header call to preach.hrl
-%
-% Revision 1.25  2009/07/23 16:15:59  depaulfm
-% DEV/SRC/preach.erl:
-%
-% Partially abstracted away how caching is handled. Still need to abstract away cache ets:lookups and ets:insert;
-% Made two versions of sendStates: caching, nocaching for easy readability;
-% Created preach.erl to contain macros and some util functions;
-% Changed the spawn call from 'test' to '?MODULE'. Now, each file and module should follow the standard of having the same name
-% Continue code clean up
-%
-%
-% DEV/TB/hosts:
-%
-% Added 'main' hosts which should contain all hosts from which preach can choose;
-%
-% DEV/TB/dek/Emakefile,
-% DEV/TB/german/Emakefile,
-% DEV/TB/peterson/Emakefile,
-% DEV/TB/stress/Emakefile:
-%
-% Added makefile for every example. Can be called from erl prompt by issuing make:all().
-%
-%
-% DEV/TB/dek/dek_modified.erl,
-% DEV/TB/german/german2.erl,
-% DEV/TB/german/german3.erl,
-% DEV/TB/german/german4.erl,
-% DEV/TB/peterson/n5_peterson_modified.erl,
-% DEV/TB/peterson/n6_peterson_modified.erl,
-% DEV/TB/peterson/n7_peterson_modified.erl:
-%
-% Modified all examples adding autoStart, which is called from ptest;
-% Changed module names to be the same as the file name
-%
-%
-% SCRIPTS/ptest:
-%
-% Added script to automatically compile and run the desired tests;
-% Requires $PREACH_PATH/SCRIPTS to be in the $PATH
-%
-% Revision 1.24  2009/07/16 21:19:29  depaulfm
-% Made state caching an option to be passed to erl as -statecaching; more code clean-up
-%
-% Revision 1.23  2009/07/15 00:26:36  depaulfm
-% First cut at clean up
-%
-% Revision 1.22  2009/06/24 00:24:09  binghamb
-% New caching scheme; changed from calling startstate() in gospel code to startstates(), which returns a list instead of a single state.
-%
-% Revision 1.21  2009/06/22 21:16:46  binghamb
-% Implemented a first shot at state-caching.
-%
-% Revision 1.20  2009/06/03 16:36:23  depaulfm
-% Removed ets references and unwanted commented lines; **FIXED** slaves traversal of list hostlist; **REPLACED** ets w/ bloom filter w/ fixed-sized, left commented out scalable bloom filters; The fixed-size of the bloom-filter HAS to become a parameter eventually (it is hardcoded right now); **MODIFIED** interface of reach to count visited states
-%
-% Revision 1.19  2009/05/25 01:47:05  depaulfm
-% Generalized mynode; Modified start to read a file containing a list of hosts; Added slaves which starts each node; Modified initThreads to take into account the generalized mynode. It requires a file called host in the directory from which you launch erl. Erlang should be launched w/ the following erl -sname pruser1 -rsh ssh
-%
-% Revision 1.18  2009/05/14 23:14:17  binghamb
-% Changed the way we send states. Now using John's idea of sending all generated states at once after the state-queue has been consumed, rather than interleaving the consumption of a state and the sending of it's sucessors. Improve performance on a couple small tests.
-%
-% Revision 1.17  2009/05/09 01:53:12  jbingham
-% sneding to brad
-%
-% Revision 1.16  2009/05/02 00:37:12  jbingham
-% made a few minor tweaks to make preach work with the current german2nodes.erl.
-% brad told me to check them in, so if this annoys you blame him
-%
-% Revision 1.15  2009/04/23 07:53:48  binghamb
-% Testing the German protocol.
-%
-% Revision 1.14  2009/04/22 05:11:00  binghamb
-% Working to get preach and german to work together. Currently not reaching all the states we should be.
-%
-% Revision 1.13  2009/04/15 16:25:17  depaulfm
-% Changed interface; removed module/export definitions; Gospel code should include preach.erl and export its called functions; Requires PREACH_PATH env variable set
-%
-% Revision 1.12  2009/04/14 18:31:50  binghamb
-% Fixed incorrect module name in previous commit
-%
-% Revision 1.11  2009/04/13 18:15:37  binghamb
-% List of PIDs now implemented with a dict instead of an erlang list
-%
-% Revision 1.10  2009/03/28 00:59:35  binghamb
-% Using ets table instead of dict; fixed a bug related to not tagging the PID lis with an atom when sending.
-%
-% Revision 1.9  2009/03/25 23:54:44  binghamb
-% Fixed the deadlock bug; now all termination signals come from the root only. Cleaned up some code and moved the default model to tiny.erl.
-%
-% Revision 1.8  2009/03/22 23:52:50  binghamb
-% Substantial changes to communication. Implemented a termination scheme similar to Stern and Dill's. This has introduced a rarely occuring deadlock bug which is easily fixable. Also more verbose output.
-%
-% Revision 1.7  2009/03/18 23:28:20  binghamb
-% Enabled distributed threads for testing purposes. Also allowing bit packing with stress test, and some code cleanup stuff.
-%
-% Revision 1.6  2009/03/14 00:47:21  binghamb
-% Changed from using sets to dict for storing states.
-%
-% Revision 1.5  2009/03/14 00:20:44  binghamb
-% No longer caching ALL states generated. Instead, store all states OWNED by a given processor. This change increases the number of messages but decreases the upper bound on memory per process.
-%
-% Revision 1.4  2009/03/10 20:25:02  binghamb
-% One line change: dek:transition -> transition
-%
-% Revision 1.3  2009/03/10 20:22:37  binghamb
-% Compatable with dek.m. Changed main function start, now preach:start(Start,End,P).
-%
-% Revision 1.2  2009/02/23 02:43:40  binghamb
-% Deleted some commented out code and filled in details in function/module headers
-%
-% Revision 1.1  2009/02/14 00:53:47  depaulfm
-% Continue Bootstrapping repository
-%
+    end.
