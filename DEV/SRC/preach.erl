@@ -48,7 +48,7 @@ timeoutTime() -> 2000.
 %%     
 %%----------------------------------------------------------------------
 createHashTable(IsUsingMnesia) ->
-    if IsUsingMnesia -> visited_state;
+    if IsUsingMnesia -> ?DBHTNAME;
       true -> bloom:bloom(?BLOOM_N_ENTRIES,?BLOOM_ERR_PROB)
     end.
 
@@ -175,8 +175,8 @@ createMnesiaTables(Names) ->
        %size(Names) == 2 -> NDiscCopies = 2;
        true -> NDiscCopies = 2
     end,
-    fragmentron:create_table(visited_state, [{attributes, record_info(fields, visited_state)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
-    fragmentron:create_table(state_queue, [{attributes, record_info(fields, state_queue)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
+    fragmentron:create_table(?DBHTNAME, [{attributes, record_info(fields, ?DBHTNAME)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
+    fragmentron:create_table(?DBSQNAME, [{attributes, record_info(fields, ?DBSQNAME)}, {frag_properties, [{n_fragments, length(NodePool)}, {node_pool, NodePool}, {n_disc_copies, NDiscCopies}]}]),
     mnesia:create_table(epic_num, [{disc_copies, NodePool}, {local_content, true}]),
     lists:foreach(fun(X) -> X ! {ready, {list_to_atom(getSname()),node()}} end, Others),
     ok.
@@ -224,7 +224,7 @@ addMnesiaTables(IsUsingMnesia, Names) ->
               true -> attachToMnesiaTables(Names)
             end
         end,
-        mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[visited_state, state_queue, epic_num], 10000], mnesia_frag);
+        mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[?DBHTNAME, ?DBSQNAME, epic_num], 10000], mnesia_frag);
       true -> ok
     end.
 
@@ -376,7 +376,7 @@ updateOwners(Names) ->
 
 updateOwners([], _Acc, Result) -> Result;
 updateOwners([FragNum|Rest], Acc, Result) -> 
-    FragName = if FragNum == 1 -> visited_state; true -> list_to_atom("visited_state_frag"++integer_to_list(FragNum)) end,
+    FragName = if FragNum == 1 -> ?DBHTNAME; true -> list_to_atom("visited_state_frag"++integer_to_list(FragNum)) end,
     HostList = lists:sort(mnesia:table_info(FragName, where_to_write)),
     SeenBefore = lists:sort(fun({_,A},{_,B}) -> (A > B) end, lists:filter(fun({H, _}) -> lists:member(H, HostList) end, Acc)),
     if (HostList == []) -> io:format("Error: Nowhere to write ~w~n", [FragName]), halt();
@@ -413,7 +413,7 @@ start() ->
     %% ACKTable is RAM only ets table storing the ACKs-remaining counter and the sequence number per state
     IsUsingMnesia = isUsingMnesia(),
     HashTable = createHashTable(IsUsingMnesia),
-    StateQueue = state_queue,
+    StateQueue = ?DBSQNAME,
     NodeData = epic_num,
     addMnesiaTables(IsUsingMnesia, StaticNames), % TODO: take names of HashTable, StateQueue, NodeData
     EpicNum = incEpicNum(IsUsingMnesia, NodeData),
@@ -435,7 +435,7 @@ start() ->
         reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
 
         if IsUsingMnesia -> mnesia:info(),
-            NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(visited_state, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
+            NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(HashTable, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
           true -> NumMnesiaUniqStates = 0
         end,
         io:format("~w PID ~w: waiting for workers to report termination...~n", [node(), self()]),
@@ -624,7 +624,7 @@ sendStates(nocaching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent)
     IsUsingMnesia = isUsingMnesia(),
     if IsUsingMnesia ->
         % set Owner as function of which node has local copy of frag
-        {_,_,_,_,FragHash} = mnesia:table_info(visited_state, frag_hash),
+        {_,_,_,_,FragHash} = mnesia:table_info(?DBHTNAME, frag_hash),
         FragNum = 1+(mnesia_frag_hash:key_to_frag_number(FragHash, First) rem dict:size(Names)), % TODO: this is broken / size(Names) is a hack for # of fragments since I set them equal
         Owner = dict:fetch(FragNum, Names);
         %io:format("~w sendStates FragHash=~w FragNum=~w Owner=~w~n", [node(), FragHash, FragNum, Owner]),
@@ -803,6 +803,14 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
             io:format("~w received ACK for state ~w when ACKs outstanding <= 0, SeqNo = ~w EpicNo = ~w~n", [node(), Parent, SeqNo, EpicNo]);
           true -> ok
         end,
+        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+
+    {Sender, status_query} ->
+        {HTSize, SQSize} = if IsUsingMnesia ->
+            mnesia:activity(sync_transaction, fun() -> A = mnesia:table_info(HashTable, size), B = mnesia:table_info(StateQueue, size), {A,B} end, mnesia_frag);
+          true -> {0, 0}
+        end,
+        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, status_reply},
         checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     pause -> % report # messages sent/received
