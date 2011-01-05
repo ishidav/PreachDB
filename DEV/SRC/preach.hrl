@@ -61,13 +61,14 @@ displayHeader() ->
     io:format("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%~n~n",[]).
 
 displayOptions() ->
+    IsUsingMnesia = isUsingMnesia(),
     io:format("------------------------------------------~n",[]),
     io:format("PreachDB enabled options:~n~n",[]),
     io:format("sname        ~s~n",[getSname()]),
     io:format("is root      [true/false]? ~w~n",[amIRoot()]),
     io:format("localmode    [true/false]? ~w~n",[isLocalMode()]),
     io:format("mnesia       [true/false]? ~w~n",[isUsingMnesia()]),
-    io:format("mnesia dir   ~s~n",[getMnesiaDir()]),
+    if (IsUsingMnesia) -> io:format("mnesia dir   ~s~n",[getMnesiaDir()]); true -> ok end,
     io:format("cwd          ~s~n",[element(2, file:get_cwd())]),
     io:format("------------------------------------------~n",[]).
 

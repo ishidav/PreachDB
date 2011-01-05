@@ -24,4 +24,4 @@ if ($help or ($module eq '')) {
 }
 
 print("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop\n");
-system("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/ebin -run $module killMsg -run init stop");
+system("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop");

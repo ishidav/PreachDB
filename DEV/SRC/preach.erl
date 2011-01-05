@@ -458,7 +458,7 @@ start() ->
         rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
         reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
         io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
-        mnesia:info(),
+        if IsUsingMnesia -> mnesia:info(); true -> ok end,
         timer:sleep(5000)
     end,
     stopMnesia(IsUsingMnesia),
@@ -494,12 +494,39 @@ autoStart() ->
 %%     
 %%----------------------------------------------------------------------
 lateStart() ->
+    register(list_to_atom(getSname()), self()),
+    % assume I am not root
+    % get list of nodes
+    %spawn(MasterNode, ce_db, probe_db_nodes, [{list_to_atom(getSname()), self()}]),
+    %DBNodes = receive
+    %  {probe_db_nodes_reply, DBNodes} -> DBNodes
+    %end,
     % TODO connect to existing tables
     % TODO add table copy of any frag w/ missing replicas
     % TODO rebalance frags?
     % TODO check message Q
     % TODO reach()
     ok.
+
+%%----------------------------------------------------------------------
+%% Function: autoLateStart/0
+%% Purpose : A wrapper for the parallel version of our model checker.
+%%           To be used when called from the ptest script
+%%           The main purpose is to separate basic initialization (non-algorithmic)
+%%          from the rest of the compuation
+%% Args    : 
+%%	
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+autoLateStart() ->
+    displayHeader(),
+    displayOptions(),
+    process_flag(trap_exit,true),
+    {module, _} = code:load_file(ce_db),
+    {module, _} = code:load_file(fragmentron),
+    {module, _} = code:load_file(etable),
+    lateStart().
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/4
@@ -810,15 +837,19 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
             mnesia:activity(sync_transaction, fun() -> A = mnesia:table_info(HashTable, size), B = mnesia:table_info(StateQueue, size), {A,B} end, mnesia_frag);
           true -> {0, 0}
         end,
-        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, status_reply},
+        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSName()), node()}, status_reply},
         checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
-    pause -> % report # messages sent/received
+    {Sender, control_pause} ->
+        Sender ! {{list_to_atom(getSName()), node()}, control_pause_ack},
+        receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+
+    pause -> % report # messages sent/received; used in non-mnesia termination detection
         rootPID(Names) ! {NumSent, NumRecd, poll},
         receive     
           {'EXIT', Pid, Reason } ->
             exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
-          resume -> % TODO write user scripts to send pause and resume to all nodes
+          resume ->
             checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
           die -> terminateMe(BigListSize, rootPID(Names))
         end;
@@ -838,24 +869,60 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
             {NewStates ++ CurQ, NumRecd, CurQLen+NumStates};
           true -> % otherwise, root polls for termination
             io:format("~w PID ~w: Root has timed out, polling workers now...~n", [node(), self()]),
-            CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
-            CheckSum = element(1,CommAcc) - element(2,CommAcc),
-            if CheckSum == 0 ->  % time to die
-                io:format("=== No End states were found ===~n"),
-                terminateAll(tl(dictToList(Names))),
-                terminateMe(BigListSize, rootPID(Names));
-              true ->    % resume other processes and wait again for new states or timeout
-                io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
-                          "again for timeout...~n", [node(), self(),CheckSum]),
-                resumeWorkers(tl(dictToList(Names))),
-                checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+            if IsUsingMnesia ->
+                CurDiscSQSize = mnesia:activity(sync_transaction, fun mnesia:table_info/2, [StateQueue, size], mnesia_frag),
+                if CurDiscSQSize == 0 ->  % time to die
+                    io:format("=== No End states were found ===~n"),
+                    terminateAll(tl(dictToList(Names))),
+                    terminateMe(BigListSize, rootPID(Names));
+                  true ->
+                    io:format("~w PID ~w: Root resuming, disc queue size non-zero~n", [node(), self()]),
+                    checkMessageQ(false, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+                end;
+              true ->
+                CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
+                CheckSum = element(1,CommAcc) - element(2,CommAcc),
+                if CheckSum == 0 ->  % time to die
+                    io:format("=== No End states were found ===~n"),
+                    terminateAll(tl(dictToList(Names))),
+                    terminateMe(BigListSize, rootPID(Names));
+                  true ->    % resume other processes and wait again for new states or timeout
+                    io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
+                              "again for timeout...~n", [node(), self(),CheckSum]),
+                    resumeWorkers(tl(dictToList(Names))),
+                    checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+                end
             end
         end
     end.
 
 %%----------------------------------------------------------------------
+%% Function: receiveCtrlMessage/11
+%% Purpose : helper for check message Q when user preparing to modify
+%%           node pool
+%% Args    : same as checkMessageQ
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
+    receive
+    {Sender, status_query} ->
+        {HTSize, SQSize} = if IsUsingMnesia ->
+            mnesia:activity(sync_transaction, fun() -> A = mnesia:table_info(HashTable, size), B = mnesia:table_info(StateQueue, size), {A,B} end, mnesia_frag);
+          true -> {0, 0}
+        end,
+        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSName()), node()}, status_reply},
+        receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+    {Sender, control_resume} ->
+        Sender ! {{list_to_atom(getSName()), node()}, control_resume_ack},
+        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+    {'EXIT', Pid, Reason } ->
+        exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates)
+    end.
+
+%%----------------------------------------------------------------------
 %% Function: pollWorkers/2 
-%% Purpose :  
+%% Purpose : non-mnesia termination detection
 %% Args    : 
 %% Returns :
 %%     
@@ -941,13 +1008,16 @@ killMsg() ->
 %%     
 %%----------------------------------------------------------------------
 pauseMsg(Node) ->
-    Node ! pause,
+    Node ! {{self(), node()}, control_pause},
+    receive {Node, control_pause_ack} -> ok end,
     ok.
 
 pauseMsg() ->
     {HostList,_} = hosts(),
     {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
-    lists:foreach(fun(Node) -> Node ! pause end, NamesList),
+    lists:foreach(fun(Node) -> Node ! {{self(), node()}, control_pause} end, NamesList),
+    lists:foreach(fun(Node) -> receive {Node, control_pause_ack} -> ok end end, NamesList),
+    io:format("Received control_pause_ack from all nodes~n", []),
     ok.
 
 %%----------------------------------------------------------------------
@@ -958,18 +1028,47 @@ pauseMsg() ->
 %%     
 %%----------------------------------------------------------------------
 resumeMsg(Node) ->
-    Node ! resume,
+    Node ! {{self(), node()}, control_resume},
+    receive {Node, control_resume_ack} -> ok end,
     ok.
 
 resumeMsg() ->
     {HostList,_} = hosts(),
     {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
-    lists:foreach(fun(Node) -> Node ! resume end, NamesList),
+    lists:foreach(fun(Node) -> Node ! {{self(), node()}, control_resume} end, NamesList),
+    lists:foreach(fun(Node) -> receive {Node, control_resume_ack} -> ok end end, NamesList),
+    io:format("Received control_resume_ack from all nodes~n", []),
+    ok.
+
+%%----------------------------------------------------------------------
+%% Function: statusQueryMsg/1, statusQueryMsg/0
+%% Purpose : Send a resume msg to a node
+%% Args    : which node
+%% Returns :
+%%     
+%%----------------------------------------------------------------------
+statusQueryMsg(Node) ->
+    Node ! {{self(), node()}, status_query},
+    receive {NumVisitedStates, CurQLen, NumSent, NumRecd, HTSize, SQSize, Node, status_reply} ->
+        io:format("~w status: VS: ~w, QLen: ~w, Sent: ~w, Recd: ~w, HTSize: ~w, SQSize: ~w~n", [Node, NumVisitedStates, CurQLen, NumSent, NumRecd, HTSize, SQSize])
+    end,
+    ok.
+
+statusQueryMsg() ->
+    {HostList,_} = hosts(),
+    {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
+    lists:foreach(fun(Node) -> Node ! {{self(), node()}, status_query} end, NamesList),
+    lists:foreach(fun(Node) -> 
+        receive {NumVisitedStates, CurQLen, NumSent, NumRecd, HTSize, SQSize, Node, status_reply} ->
+            io:format("~w status: VS: ~w, QLen: ~w, Sent: ~w, Recd: ~w, HTSize: ~w, SQSize: ~w~n", [Node, NumVisitedStates, CurQLen, NumSent, NumRecd, HTSize, SQSize])
+        end
+    end, NamesList),
+    io:format("Received status_reply from all nodes~n", []),
     ok.
 
 %%----------------------------------------------------------------------
 %% Function: barrier/2
-%% Purpose : It implements a simple barrier to synchronize all threads.
+%% Purpose : Implements a simple wait to synchronize the master thread.
 %%           The caller iterates over a set of PIDs check-marking 
 %%          their corresponding entry in the Table
 %%           1 in the table means 'ready has been received; 0, otherwise
