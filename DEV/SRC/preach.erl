@@ -354,7 +354,7 @@ decompressState(CompressedState) ->
 %%----------------------------------------------------------------------
 %% Function: rootPID/1
 %% Purpose : Find the pid associated w/ the root machine
-%%           
+%%           NON-MNESIA ONLY!
 %%            	
 %% Args    : Ordered dictionary of pids, where element 1 maps to the root
 %%          machine
@@ -419,6 +419,7 @@ start() ->
     EpicNum = incEpicNum(IsUsingMnesia, NodeData),
     ACKTable = createACKTable(IsUsingMnesia),
     timer:sleep(4000),
+    Root = rootPID(StaticNames),
     Names = if IsUsingMnesia -> updateOwners(StaticNames); true -> StaticNames end,
 
     {A1,A2,A3} = now(),
@@ -432,7 +433,7 @@ start() ->
         sendStates(startstates(), null, 1, EpicNum, Names),
         NumSent = length(startstates()),
 
-        reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
+        reach([], null, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, 0}, [], 0, 0), %should remove null param
 
         if IsUsingMnesia -> mnesia:info(),
             NumMnesiaUniqStates = mnesia:activity(sync_transaction, fun()->mnesia:table_info(HashTable, size) end, mnesia_frag); %TODO: this is sometimes reporting incorrect number
@@ -455,8 +456,8 @@ start() ->
         io:format("\tNon-unique states visited per second [current run]: ~w~n", [trunc(NumStates/Dur)]),
         io:format("\tNon-unique states visited per second per thread [current run]: ~w~n", [trunc((NumStates/Dur)/P)]);
       true ->
-        rootPID(Names) ! {ready, {list_to_atom(getSname()),node()}},
-        reach([], null, Names, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
+        Root ! {ready, {list_to_atom(getSname()),node()}},
+        reach([], null, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
         io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
         if IsUsingMnesia -> mnesia:info(); true -> ok end,
         timer:sleep(5000)
@@ -496,11 +497,18 @@ autoStart() ->
 lateStart() ->
     register(list_to_atom(getSname()), self()),
     % assume I am not root
+    IsUsingMnesia = isUsingMnesia(),
+    HashTable = createHashTable(IsUsingMnesia),
+    StateQueue = ?DBSQNAME,
+    NodeData = epic_num,
+
     % get list of nodes
-    %spawn(MasterNode, ce_db, probe_db_nodes, [{list_to_atom(getSname()), self()}]),
-    %DBNodes = receive
-    %  {probe_db_nodes_reply, DBNodes} -> DBNodes
-    %end,
+    {HostList,_Nhosts} = hosts(),
+    Root = {pruser0, list_to_atom("pruser0@"++atom_to_list(hd(HostList)))},
+    spawn(Root, ?MODULE, probe_running_db_nodes, [{list_to_atom(getSname()), self()}]),
+    DBNodes = receive
+      {probe_db_nodes_reply, DBNodes} -> DBNodes
+    end,
     % TODO connect to existing tables
     % TODO add table copy of any frag w/ missing replicas
     % TODO rebalance frags?
@@ -527,6 +535,10 @@ autoLateStart() ->
     {module, _} = code:load_file(fragmentron),
     {module, _} = code:load_file(etable),
     lateStart().
+
+probe_running_db_nodes(ForPid) ->
+  ForPid ! {probe_db_nodes_reply, mnesia:system_info(running_db_nodes)},
+  ok.
 
 %%----------------------------------------------------------------------
 %% Function: waitForTerm/4
@@ -684,7 +696,7 @@ sendStates(nocaching, [First | Rest], Parent, SeqNo, EpicNo, Me, Names, NumSent)
 %% Returns : done
 %%     
 %%----------------------------------------------------------------------
-reach([FirstState | RestStates], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStateList, Count, QLen) ->
+reach([FirstState | RestStates], End, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStateList, Count, QLen) ->
     %io:format("~w in reach(~w)~n", [node(), FirstState]),
     profiling(0, 0, NumSent, NumRecd, Count, QLen),
     CurState = decompressState(FirstState),
@@ -697,26 +709,26 @@ reach([FirstState | RestStates], End, Names, HashTable, StateQueue, ACKTable, Ep
         if EndFound ->
             ThisNumSent = 0,
             io:format("=== End state ~w found by ~w PID ~w ===~n", [End, node(), self()]),
-            rootPID(Names) ! end_found;
+            Root ! end_found;
           true -> ThisNumSent = sendStates(NewStates, FirstState, SeqNo, EpicNum, Names)
         end;
       true -> ThisNumSent = 0
     end,
 
-    Ret = checkMessageQ(false,Count, Names, {NumSent+ThisNumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {RestStates, QLen-1} ),
+    Ret = checkMessageQ(false, Count, Names, Root, {NumSent+ThisNumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {RestStates, QLen-1} ),
     if Ret == done -> done;
       true -> {NewQ, NewNumRecd, NewQLen} = Ret,
-        reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
+        reach(NewQ, End, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {NumSent+ThisNumSent, NewNumRecd},[], Count+1, NewQLen)
     end;
 
 % StateQ is empty, so check for messages. If none are found, we die
-reach([], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStates, Count, _QLen) ->
+reach([], End, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRecd}, _NewStates, Count, _QLen) ->
     RandSleep = random:uniform(2000),
     if (Count > 3) -> timer:sleep(RandSleep); % delay to slow spamming the slow nodes
       true -> ok
     end,
     % check messages
-    Ret = checkMessageQ(true, Count, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {[], 0}),
+    Ret = checkMessageQ(true, Count, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, EpicNum, [], 0, {[], 0}),
     if Ret == done -> done;
       true -> {Q, NewNumRecd, _NumStates} = Ret,
         % if mnesia, check if anything in state queue
@@ -726,7 +738,7 @@ reach([], End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NumRec
             NewQ = lists:append(NewStates, Q) %[State | Q]
         end,
         %NewQ = lists:append(firstOfStateQueue(isUsingMnesia(), StateQueue), Q),
-        reach(NewQ, End, Names, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NewNumRecd}, [], Count, length(NewQ))
+        reach(NewQ, End, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {NumSent, NewNumRecd}, [], Count, length(NewQ))
     end.
 
 %%----------------------------------------------------------------------
@@ -798,7 +810,7 @@ profiling(_WQsize, _SendQsize, NumSent, NumRecd, Count, QLen) ->
 %%			OR the atom 'done' to indicate we are finished visiting states
 %%     
 %%----------------------------------------------------------------------
-checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
+checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
     IsRoot = amIRoot(),
     IsUsingMnesia = isUsingMnesia(),
     if IsUsingMnesia -> %(IsRoot and IsUsingMnesia)
@@ -818,9 +830,9 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
         IsMember = addElemToHTAndSQReturnIsMember(IsUsingMnesia, State, HashTable, StateQueue),
         Sender ! {Parent, SeqNo, EpicNo, ack},
         if IsMember or (IsUsingMnesia and ((NumStates + CurQLen) >= 5000)) ->  % cap in-memory queue size
-            checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ, CurQLen});
+            checkMessageQ(false, BigListSize, Names, Root, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ, CurQLen});
           true ->
-            checkMessageQ(false, BigListSize, Names, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, [State|NewStates], NumStates+1,{CurQ, CurQLen})
+            checkMessageQ(false, BigListSize, Names, Root, {NumSent, NumRecd+1}, HashTable, StateQueue, ACKTable, MyEpicNum, [State|NewStates], NumStates+1,{CurQ, CurQLen})
         end;
 
     {Parent, SeqNo, EpicNo, ack} ->  % received an ACK for Parent; requires Parent/SeqNo to be send along with State in sendStates()
@@ -830,39 +842,39 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
             io:format("~w received ACK for state ~w when ACKs outstanding <= 0, SeqNo = ~w EpicNo = ~w~n", [node(), Parent, SeqNo, EpicNo]);
           true -> ok
         end,
-        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     {Sender, status_query} ->
         {HTSize, SQSize} = if IsUsingMnesia ->
             mnesia:activity(sync_transaction, fun() -> A = mnesia:table_info(HashTable, size), B = mnesia:table_info(StateQueue, size), {A,B} end, mnesia_frag);
           true -> {0, 0}
         end,
-        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSName()), node()}, status_reply},
-        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSname()), node()}, status_reply},
+        checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     {Sender, control_pause} ->
-        Sender ! {{list_to_atom(getSName()), node()}, control_pause_ack},
-        receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        Sender ! {{list_to_atom(getSname()), node()}, control_pause_ack},
+        receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     pause -> % report # messages sent/received; used in non-mnesia termination detection
-        rootPID(Names) ! {NumSent, NumRecd, poll},
+        Root ! {NumSent, NumRecd, poll},
         receive     
           {'EXIT', Pid, Reason } ->
             exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
           resume ->
-            checkMessageQ(true, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
-          die -> terminateMe(BigListSize, rootPID(Names))
+            checkMessageQ(true, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates,{CurQ,CurQLen});
+          die -> terminateMe(BigListSize, Root)
         end;
 
     die -> 
-        terminateMe(BigListSize, rootPID(Names));
+        terminateMe(BigListSize, Root);
 
     {'EXIT', Pid, Reason } ->
         exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates);
 
     end_found -> 
-        terminateAll(tl(dictToList(Names))),
-        terminateMe(BigListSize, rootPID(Names))
+        terminateAll(lists:delete(Root, dictToList(Names))),
+        terminateMe(BigListSize, Root)
 
     after Timeout -> % wait for timeoutTime() ms if root
         if Timeout == 0 ->  % non-blocking case, return 
@@ -873,24 +885,24 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
                 CurDiscSQSize = mnesia:activity(sync_transaction, fun mnesia:table_info/2, [StateQueue, size], mnesia_frag),
                 if CurDiscSQSize == 0 ->  % time to die
                     io:format("=== No End states were found ===~n"),
-                    terminateAll(tl(dictToList(Names))),
-                    terminateMe(BigListSize, rootPID(Names));
+                    terminateAll(lists:delete(Root, dictToList(Names))),
+                    terminateMe(BigListSize, Root);
                   true ->
                     io:format("~w PID ~w: Root resuming, disc queue size non-zero~n", [node(), self()]),
-                    checkMessageQ(false, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+                    checkMessageQ(false, BigListSize, Names, Root, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
                 end;
               true ->
                 CommAcc = pollWorkers(dictToList(Names), {NumSent, NumRecd}),
                 CheckSum = element(1,CommAcc) - element(2,CommAcc),
                 if CheckSum == 0 ->  % time to die
                     io:format("=== No End states were found ===~n"),
-                    terminateAll(tl(dictToList(Names))),
-                    terminateMe(BigListSize, rootPID(Names));
+                    terminateAll(lists:delete(Root, dictToList(Names))),
+                    terminateMe(BigListSize, Root);
                   true ->    % resume other processes and wait again for new states or timeout
                     io:format("~w PID ~w: unusual, checksum is ~w, will wait " ++ 
                               "again for timeout...~n", [node(), self(),CheckSum]),
-                    resumeWorkers(tl(dictToList(Names))),
-                    checkMessageQ(true, BigListSize, Names, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
+                    resumeWorkers(lists:delete(Root, dictToList(Names))),
+                    checkMessageQ(true, BigListSize, Names, Root, {NumSent,NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen})
                 end
             end
         end
@@ -904,18 +916,19 @@ checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, Stat
 %% Returns :
 %%     
 %%----------------------------------------------------------------------
-receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
+receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen}) ->
+    IsUsingMnesia = isUsingMnesia(),
     receive
     {Sender, status_query} ->
         {HTSize, SQSize} = if IsUsingMnesia ->
             mnesia:activity(sync_transaction, fun() -> A = mnesia:table_info(HashTable, size), B = mnesia:table_info(StateQueue, size), {A,B} end, mnesia_frag);
           true -> {0, 0}
         end,
-        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSName()), node()}, status_reply},
-        receiveCtrlMessage(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSname()), node()}, status_reply},
+        receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
     {Sender, control_resume} ->
-        Sender ! {{list_to_atom(getSName()), node()}, control_resume_ack},
-        checkMessageQ(IsTimeout, BigListSize, Names, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        Sender ! {{list_to_atom(getSname()), node()}, control_resume_ack},
+        checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
     {'EXIT', Pid, Reason } ->
         exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates)
     end.

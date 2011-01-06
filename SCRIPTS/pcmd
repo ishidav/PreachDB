@@ -19,9 +19,18 @@ if ($help or ($module eq '')) {
   print "DIRB      is a directory where erlang 'beam' files are located (default: ebin)\n";
   print "MODULE    is the name of the module being model-checked (REQUIRED)\n";
   print "CMD       is the message to send all nodes (default: killMsg)\n";
-  print "            command=\{killMsg, pauseMsg, resumeMsg\}\n";
+  print "            command=\{killMsg, pauseMsg, resumeMsg, newNode\}\n";
   exit;
 }
-
-print("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop\n");
-system("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop");
+if ($command eq 'newNode') {
+  my $command = "nohup erl -noinput -sname pruserX -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoLateStart -run init stop ";
+  if ($local) {$command .= "-localmode ";}
+  if ($mnesia) {$command .= "-mnesia dir \\'\\\"/tmp/mnesiaX\\\"\\' ";}
+  $command .= "'2>&1| tee $ENV{PWD}/$module"."X.log &'";
+  print $command . " \n";
+  system($command);
+}
+else {
+  print("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop\n");
+  system("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop");
+}
