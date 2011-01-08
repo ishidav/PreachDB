@@ -38,7 +38,7 @@
 %---------------Manually added-------------------%
 
 -module(n5_peterson_modified).
--export([start/0, autoStart/0, transition/1, killMsg/0, pauseMsg/0, resumeMsg/0, statusQueryMsg/0]).
+-export([start/0, autoStart/0, transition/1, autoLateStart/0, killMsg/0, pauseMsg/0, resumeMsg/0, statusQueryMsg/0, probe_running_db_nodes/1]).
 %-export([start/3, startWorker/1]).
 -include("$PREACH_PATH/DEV/SRC/preach.erl").
 

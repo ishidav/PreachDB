@@ -505,16 +505,54 @@ lateStart() ->
     % get list of nodes
     {HostList,_Nhosts} = hosts(),
     Root = {pruser0, list_to_atom("pruser0@"++atom_to_list(hd(HostList)))},
-    spawn(Root, ?MODULE, probe_running_db_nodes, [{list_to_atom(getSname()), self()}]),
+    spawn(list_to_atom("pruser0@"++atom_to_list(hd(HostList))), ?MODULE, probe_running_db_nodes, [{list_to_atom(getSname()), node()}]),
     DBNodes = receive
-      {probe_db_nodes_reply, DBNodes} -> DBNodes
+      {probe_db_nodes_reply, L} -> L
     end,
-    % TODO connect to existing tables
-    % TODO add table copy of any frag w/ missing replicas
-    % TODO rebalance frags?
-    % TODO check message Q
-    % TODO reach()
-    ok.
+    % send pause to DBNodes
+    NamesList = lists:map(fun(Node) -> {list_to_atom(string:sub_word(atom_to_list(Node),1,$@)), Node} end, DBNodes),
+    lists:foreach(fun(Node) -> Node ! {{list_to_atom(getSname()), node()}, control_pause} end, NamesList),
+
+    mnesia:change_config(dc_dump_limit, 40),
+    mnesia:change_config(dump_log_write_threshold, 50000),
+    mnesia:start(),
+    timer:sleep(500),
+    mnesia:change_config(extra_db_nodes, DBNodes),
+    mnesia:change_table_copy_type(schema, node(), disc_copies),
+    mnesia:add_table_copy(epic_num, node(), disc_copies),  % this must be done before deleting schema of down nodes
+    % you will have to do mnesia:del_table_copy(schema, Node) for all down nodes
+    DownNodes = [X || X <- mnesia:system_info(db_nodes), not lists:member(X, mnesia:system_info(running_db_nodes))],
+    lists:foreach(fun(Node) -> mnesia:del_table_copy(schema, Node) end, DownNodes),
+    HTAdd = fragmentron:add_node (?DBHTNAME, node()),
+    SQAdd = fragmentron:add_node (?DBSQNAME, node()),
+    if (is_tuple(HTAdd) or is_tuple(SQAdd)) ->
+        io:format("~w PID ~w: fragmentron:add_node() failed on one or more tables~n", [node(), self()]),
+        io:format("~w PID ~w: resuming nodes ~w and exiting~n", [node(), self(), DBNodes]),
+        stopMnesia(IsUsingMnesia),
+        timer:sleep(500),
+        lists:foreach(fun(Node) -> Node ! {{list_to_atom(getSname()), node()}, control_resume} end, NamesList),
+        halt();
+      true -> ok
+    end,
+    mnesia:activity(sync_transaction, fun mnesia:wait_for_tables/2, [[?DBHTNAME, ?DBSQNAME, epic_num], 10000], mnesia_frag),
+
+    EpicNum = incEpicNum(IsUsingMnesia, NodeData),
+    ACKTable = createACKTable(IsUsingMnesia),
+    Names = updateOwners(dict:from_list(lists:zip(lists:seq(1, length(HostList)), HostList))),  % updateOwners only cares about the size of the dict
+    % tell DBNodes to updateOwners and resume
+    lists:foreach(fun(Node) -> Node ! {{list_to_atom(getSname()), node()}, control_resume} end, NamesList),
+
+    {A1,A2,A3} = now(),
+    random:seed(A1, A2, A3),
+
+    reach([], null, Names, Root, HashTable, StateQueue, ACKTable, EpicNum, {0,0}, [], 0, 0),
+
+    io:format("~w PID ~w: Worker ~w is done~n", [node(), self(), node()]),
+    if IsUsingMnesia -> mnesia:info(); true -> ok end,
+    timer:sleep(5000),
+    stopMnesia(IsUsingMnesia),
+    io:format("----------~n"),
+    done.
 
 %%----------------------------------------------------------------------
 %% Function: autoLateStart/0
@@ -853,7 +891,7 @@ checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable
         checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     {Sender, control_pause} ->
-        Sender ! {{list_to_atom(getSname()), node()}, control_pause_ack},
+        io:format("~w PID ~w: Received control_pause from ~w~n", [node(), self(), Sender]),
         receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
 
     pause -> % report # messages sent/received; used in non-mnesia termination detection
@@ -927,8 +965,7 @@ receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, Hash
         Sender ! {BigListSize, CurQLen+NumStates, NumSent, NumRecd, HTSize, SQSize, {list_to_atom(getSname()), node()}, status_reply},
         receiveCtrlMessage(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
     {Sender, control_resume} ->
-        Sender ! {{list_to_atom(getSname()), node()}, control_resume_ack},
-        checkMessageQ(IsTimeout, BigListSize, Names, Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
+        checkMessageQ(IsTimeout, BigListSize, updateOwners(Names), Root, {NumSent, NumRecd}, HashTable, StateQueue, ACKTable, MyEpicNum, NewStates, NumStates, {CurQ, CurQLen});
     {'EXIT', Pid, Reason } ->
         exitHandler(Pid, Reason, BigListSize, CurQLen+NumStates)
     end.
@@ -1022,15 +1059,12 @@ killMsg() ->
 %%----------------------------------------------------------------------
 pauseMsg(Node) ->
     Node ! {{self(), node()}, control_pause},
-    receive {Node, control_pause_ack} -> ok end,
     ok.
 
 pauseMsg() ->
     {HostList,_} = hosts(),
     {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(Node) -> Node ! {{self(), node()}, control_pause} end, NamesList),
-    lists:foreach(fun(Node) -> receive {Node, control_pause_ack} -> ok end end, NamesList),
-    io:format("Received control_pause_ack from all nodes~n", []),
     ok.
 
 %%----------------------------------------------------------------------
@@ -1042,15 +1076,12 @@ pauseMsg() ->
 %%----------------------------------------------------------------------
 resumeMsg(Node) ->
     Node ! {{self(), node()}, control_resume},
-    receive {Node, control_resume_ack} -> ok end,
     ok.
 
 resumeMsg() ->
     {HostList,_} = hosts(),
     {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(Node) -> Node ! {{self(), node()}, control_resume} end, NamesList),
-    lists:foreach(fun(Node) -> receive {Node, control_resume_ack} -> ok end end, NamesList),
-    io:format("Received control_resume_ack from all nodes~n", []),
     ok.
 
 %%----------------------------------------------------------------------
@@ -1068,7 +1099,7 @@ statusQueryMsg(Node) ->
     ok.
 
 statusQueryMsg() ->
-    {HostList,_} = hosts(),
+    {HostList,_} = hosts(),  % TODO replace this with the running DBNodes query
     {NamesList, _} = lists:mapfoldl(fun(X, I) -> {{list_to_atom("pruser" ++ integer_to_list(I)), list_to_atom("pruser" ++ integer_to_list(I) ++ "@" ++ atom_to_list(X))}, I+1} end, 0, HostList),
     lists:foreach(fun(Node) -> Node ! {{self(), node()}, status_query} end, NamesList),
     lists:foreach(fun(Node) -> 
