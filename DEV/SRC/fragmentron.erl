@@ -87,8 +87,9 @@ change_targets (TableName, Targets) when is_list (Targets) ->
             (fun () -> 
                lists:foreach (fun ({ Target, Value }) 
                                 when Target =:= n_ram_copies;
-                                     Target =:= n_disc_copies;
-                                     ?if_mnesia_ext (Target =:= n_external_copies;,)
+                                     %Target =:= n_disc_copies;
+                                     %?if_mnesia_ext (Target =:= n_external_copies;,)
+                                     ?if_mnesia_ext (Target =:= n_disc_copies; Target =:= n_external_copies;,Target =:= n_disc_copies;)
                                      Target =:= n_disc_only_copies,
                                      Value >= 0 ->
                                 ok = mnesia:write ({ schema_extra, 
@@ -380,7 +381,8 @@ copy_type (TableName, Node) ->
     of
       { true, false, false, false } -> ram_copies;
       { false, true, false, false } -> disc_copies;
-      ?if_mnesia_ext ({ false, false, true, false } -> external_copies;,)
+      %?if_mnesia_ext ({ false, false, true, false } -> external_copies;,)
+      { false, false, true, false } -> external_copies;
       { false, false, false, true } -> disc_only_copies
   end.
 
