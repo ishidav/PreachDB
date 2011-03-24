@@ -23,9 +23,14 @@ if ($help or ($module eq '')) {
   exit;
 }
 if ($command eq 'newNode') {
-  my $command = "erl -noinput -sname pruserX -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoLateStart -run init stop -mnesia dir \'\"/tmp/mnesiaX\"\' 2>&1| tee $ENV{PWD}/$module"."X.log &";
-  print $command . " \n";
-  system($command);
+  $s = "erl -noinput -sname pruserX -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoLateStart -run init stop -mnesia dir \'\"/tmp/mnesiaX\"\' 2>&1| tee $ENV{PWD}/$module"."X.log &";
+  print $s . " \n";
+  system($s);
+}
+elsif ($command eq 'restartNode') {
+  $s = "erl -noinput -sname pruserX -rsh ssh -pa $ENV{PWD}/$beamdir -run $module autoStart -run init stop -mnesia dir \'\"/tmp/mnesiaX\"\' 2>&1| tee $ENV{PWD}/$module"."X.log &";
+  print $s . " \n";
+  system($s);
 }
 else {
   print("erl -noinput -sname usercmd -rsh ssh -pa $ENV{PWD}/$beamdir -run $module $command -run init stop\n");
